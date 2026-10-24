@@ -132,6 +132,11 @@ input[type=text]:focus { border-color: var(--hider); outline: none; }
 .pill.seeker { color: var(--seeker); }
 .pill.hider { color: var(--hider); }
 .pill.out { color: var(--muted); }
+#play.flash::after { content: ""; position: absolute; inset: 0; z-index: 1500; pointer-events: none; box-shadow: inset 0 0 0 8px var(--hider); animation: flash 1s ease-out forwards; }
+#play.flash.danger::after { box-shadow: inset 0 0 0 14px var(--danger), inset 0 0 60px 20px rgba(255,84,112,.45); }
+@keyframes flash { from { opacity: 1; } to { opacity: 0; } }
+.invite-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.invite-row .btn { flex: 1; }
 .pill.armed { background: var(--seeker); color: #1a0d03; }
 #found-box .players li { padding: 10px 12px; }
 #found-box .pill { padding: 8px 14px; font-size: 15px; }
@@ -193,6 +198,8 @@ input[type=range] { accent-color: var(--hider); }
       <p>Verstecken in echt. Mit Karte und Pings.</p>
     </div>
 
+    <p id="invite-note" class="note" hidden></p>
+
     <div class="field">
       <label class="label" for="name-in">Dein Name</label>
       <input id="name-in" type="text" maxlength="16" placeholder="z. B. Alex" autocomplete="nickname">
@@ -238,6 +245,7 @@ input[type=range] { accent-color: var(--hider); }
             <div class="code-big" id="lobby-code">––––</div>
           </div>
         </div>
+        <div class="invite-row"><button id="btn-invite" class="btn hider">Freunde einladen</button></div>
         <ul class="players" id="lobby-players"></ul>
         <p class="hint" id="role-hint">Tippe auf eine Rolle, um sie zu wechseln.</p>
 
@@ -263,7 +271,8 @@ input[type=range] { accent-color: var(--hider); }
               <option value="5">5 Min.</option><option value="10">10 Min.</option>
             </select>
           </label>
-          <label class="check"><input id="set-shrink" type="checkbox"> Zone schrumpft alle 5 Min.</label>
+          <label class="check wide"><input id="set-shrink" type="checkbox"> Zone schrumpft alle 5 Min.</label>
+          <label class="check wide"><input id="set-seekerpings" type="checkbox"> Verstecker sehen die Sucher beim Ping</label>
           <p class="hint wide">Tippe auf die Karte, um die Mitte des Spielfelds zu setzen.</p>
         </div>
         <p id="guest-settings" class="summary" hidden></p>
@@ -280,6 +289,7 @@ input[type=range] { accent-color: var(--hider); }
         <div class="status-line"><span id="ig-left">–</span><span id="ig-zone">–</span></div>
         <div id="found-box" hidden></div>
         <p class="hint" id="ig-hint"></p>
+        <label class="check" id="sound-row" hidden style="font-size:14px"><input id="sound-on" type="checkbox"> Ton bei neuen Pings</label>
       </div>
     </div>
 
@@ -458,6 +468,42 @@ let tickTimer = null;
 
 const gp = (sub = "") => `games/${code}${sub ? "/" + sub : ""}`;
 
+let lastSeekerPingIdx = -1, lastSeenPingT = 0;
+
+/* ---------- Signal bei Pings: Vibration (Android), Ton (nur Sucher), Bildschirm-Blitz ---------- */
+let audioCtx = null;
+document.addEventListener("click", () => {
+  // Browser erlauben Ton erst nach einem Tippen, darum hier "aufwecken"
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+  } catch {}
+}, true);
+function soundOn() { return store_get("fz-sound") !== "off"; }
+function beep() {
+  if (!audioCtx) return;
+  try {
+    const t = audioCtx.currentTime;
+    [[0, 880], [0.18, 1180]].forEach(([d, f]) => {
+      const o = audioCtx.createOscillator(), gn = audioCtx.createGain();
+      o.type = "sine"; o.frequency.value = f;
+      gn.gain.setValueAtTime(0.0001, t + d);
+      gn.gain.exponentialRampToValueAtTime(0.3, t + d + 0.02);
+      gn.gain.exponentialRampToValueAtTime(0.0001, t + d + 0.16);
+      o.connect(gn).connect(audioCtx.destination);
+      o.start(t + d); o.stop(t + d + 0.18);
+    });
+  } catch {}
+}
+function signal(withSound, danger = false) {
+  try { if (navigator.vibrate) navigator.vibrate(danger ? [400, 150, 400, 150, 400] : [200, 100, 200]); } catch {}
+  if (withSound) beep();
+  const el = document.getElementById("play");
+  el.classList.remove("flash", "danger"); void el.offsetWidth;
+  el.classList.add("flash"); if (danger) el.classList.add("danger");
+}
+let lastZoneAlert = 0;
+
 /* =====================================================================
    Karte
    ===================================================================== */
@@ -531,6 +577,17 @@ function showScreen(name) {
    Start / Beitreten / Demo
    ===================================================================== */
 $("#name-in").value = me.name;
+$("#sound-on").checked = soundOn();
+$("#sound-on").addEventListener("change", () => store_set("fz-sound", $("#sound-on").checked ? "on" : "off"));
+{
+  // Einladungslink: ...?code=ABCD
+  const inv = (new URLSearchParams(location.search).get("code") || "").toUpperCase();
+  if (/^[A-Z]{4}$/.test(inv)) {
+    $("#code-in").value = inv;
+    $("#invite-note").textContent = `Du wurdest zu Spiel ${inv} eingeladen. Gib deinen Namen ein und tippe auf „Beitreten“.`;
+    $("#invite-note").hidden = false;
+  }
+}
 $("#setup-note").hidden = hasFirebase;
 $("#btn-create").disabled = !hasFirebase;
 $("#btn-join").disabled = !hasFirebase;
@@ -549,7 +606,7 @@ function newCode() {
 
 function defaultSettings(center) {
   return {
-    radius: 300, pingMin: 2, durationMin: 30, hideMin: 3, shrink: false,
+    radius: 300, pingMin: 2, durationMin: 30, hideMin: 3, shrink: false, seekerPings: false,
     centerLat: center ? center.lat : null, centerLng: center ? center.lng : null,
   };
 }
@@ -615,10 +672,14 @@ function enterGame() {
 
 function leave() {
   if (unsub) unsub(); unsub = null;
-  if (db && code && game && game.status === "lobby" && game.host !== me.id && !isDemo) db.remove(gp(`players/${me.id}`));
+  if (db && code && game && !isDemo) {
+    // Der Gastgeber räumt das Spiel samt Standorten auf, wenn er geht.
+    if (game.host === me.id && game.status !== "started") db.remove(gp());
+    else if (game.status === "lobby") db.remove(gp(`players/${me.id}`));
+  }
   clearInterval(tickTimer); stopGeo(); stopDemoBots();
   if (catchesUnsub) catchesUnsub(); catchesUnsub = null;
-  game = null; code = null; lastPingIdx = -1; outsideSince = null; handledCatches = new Set(); prevCaught = {};
+  game = null; code = null; lastPingIdx = -1; lastSeekerPingIdx = -1; lastSeenPingT = 0; outsideSince = null; handledCatches = new Set(); prevCaught = {};
   dyn.clearLayers(); banner(null);
   if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
   showScreen("start");
@@ -637,6 +698,19 @@ for (const [key, sel] of Object.entries(settingInputs)) {
   $(sel).addEventListener("change", () => db.update(gp("settings"), { [key]: Number($(sel).value) }));
 }
 $("#set-shrink").addEventListener("change", () => db.update(gp("settings"), { shrink: $("#set-shrink").checked }));
+$("#set-seekerpings").addEventListener("change", () => db.update(gp("settings"), { seekerPings: $("#set-seekerpings").checked }));
+
+/* Einladungslink teilen (WhatsApp usw.) oder kopieren */
+$("#btn-invite").onclick = async () => {
+  const url = `${location.origin}${location.pathname}?code=${code}`;
+  const text = `Spiel mit bei Fangzone! Code: ${code}`;
+  if (navigator.share) {
+    try { await navigator.share({ title: "Fangzone", text, url }); return; }
+    catch (e) { if (e && e.name === "AbortError") return; }
+  }
+  try { await navigator.clipboard.writeText(`${text}\n${url}`); toast("Link kopiert. Füg ihn z. B. in WhatsApp ein."); }
+  catch { toast(url, 8000); }
+};
 
 function roleButton(pid, p) {
   const isOut = p.caught;
@@ -648,6 +722,7 @@ function roleButton(pid, p) {
 function renderLobby() {
   const g = game, isHost = g.host === me.id, s = g.settings;
   $("#lobby-code").textContent = code;
+  $("#btn-invite").hidden = isDemo;
   const list = Object.entries(g.players || {}).sort((a, b) => a[1].name.localeCompare(b[1].name));
   $("#lobby-players").innerHTML = list.map(([pid, p]) => `
     <li><span class="name">${escapeHtml(p.name)} ${pid === me.id ? '<span class="you">(du)</span>' : ""}${pid === g.host ? ' <span class="you">· Gastgeber</span>' : ""}</span>
@@ -673,9 +748,10 @@ function renderLobby() {
       el.value = String(s[key]);
     }
     $("#set-shrink").checked = !!s.shrink;
+    $("#set-seekerpings").checked = !!s.seekerPings;
   } else {
     $("#guest-settings").textContent =
-      `Spielfeld ${s.radius} m · Ping alle ${s.pingMin} Min. · ${s.durationMin} Min. Spielzeit · ${s.hideMin} Min. Versteckzeit${s.shrink ? " · Zone schrumpft" : ""}. Warte, bis der Gastgeber startet.`;
+      `Spielfeld ${s.radius} m · Ping alle ${s.pingMin} Min. · ${s.durationMin} Min. Spielzeit · ${s.hideMin} Min. Versteckzeit${s.shrink ? " · Zone schrumpft" : ""}${s.seekerPings ? " · Verstecker sehen Sucher beim Ping" : ""}. Warte, bis der Gastgeber startet.`;
   }
   const ok = seekersOf(g).length > 0 && hidersOf(g).length > 0 && s.centerLat != null;
   $("#btn-start").hidden = !isHost;
@@ -701,7 +777,12 @@ function onGameChange() {
 
   if (status === "lobby") {
     renderLobby();
-    lastPingIdx = -1; outsideSince = null; handledCatches = new Set(); prevCaught = {};
+    lastPingIdx = -1; lastSeekerPingIdx = -1; lastSeenPingT = 0; outsideSince = null; handledCatches = new Set(); prevCaught = {};
+  }
+  // Sucher: Signal, wenn neue Pings der Verstecker ankommen
+  if (status === "started" && g.players?.[me.id]?.role === "seeker") {
+    const newest = Math.max(0, ...hidersOf(g).map(([pid]) => g.pings?.[pid]?.t || 0));
+    if (newest > lastSeenPingT) { lastSeenPingT = newest; signal(soundOn()); }
   }
   if (status === "started") keepAwake();
   if (status === "ended") renderEnd();
@@ -711,7 +792,6 @@ function onGameChange() {
     if (p.caught && !prevCaught[pid] && status === "started") {
       if (pid === me.id) toast(p.reason === "zone" ? "Du warst zu lange außerhalb der Zone. Du bist raus." : "Du wurdest gefunden!", 3500);
       else toast(`${p.name} ${p.reason === "zone" ? "ist raus (Zone verlassen)" : "wurde gefunden!"}`);
-      if (pendingGotcha && p.caughtBy === me.id) pendingGotcha.hit = true;
     }
     prevCaught[pid] = !!p.caught;
   }
@@ -811,6 +891,7 @@ function tick() {
         lastPingIdx = idx;
         db.set(gp(`pings/${me.id}`), { lat: myPos.lat, lng: myPos.lng, t: now });
         toast("Ping gesendet: Die Sucher sehen jetzt, wo du bist.", 2200);
+        signal(false); // Verstecker: nur Vibration, kein Ton (sonst verrät man sich)
       }
     }
     // Verstecker: Zone prüfen
@@ -821,8 +902,14 @@ function tick() {
         outsideSince ??= now;
         const left = ZONE_GRACE_S * 1000 - (now - outsideSince);
         banner(`Du bist außerhalb der Zone! Zurück in ${fmtClock(left)}`);
+        // Signal: sofort beim Verlassen, dann alle 15 s, in den letzten 10 s jede Sekunde
+        const every = left <= 10000 ? 1000 : 15000;
+        if (now - lastZoneAlert >= every - 100) { lastZoneAlert = now; signal(false, true); }
         if (left <= 0) db.update(gp(`players/${me.id}`), { caught: true, caughtAt: now, reason: "zone" });
-      } else { outsideSince = null; }
+      } else {
+        if (outsideSince) toast("Zurück in der Zone.");
+        outsideSince = null; lastZoneAlert = 0;
+      }
     }
     if (!outside) {
       if (isDemo) banner("Demo: Tippe auf die Karte, um dich zu bewegen.", "info");
@@ -833,6 +920,14 @@ function tick() {
     if (role === "seeker" && myPos && now - lastSeekerWrite > 5000) {
       lastSeekerWrite = now;
       db.set(gp(`seekers/${me.id}`), { lat: myPos.lat, lng: myPos.lng, t: now });
+    }
+    // Sucher: beim Ping die eigene Position für Verstecker zeigen (falls eingestellt)
+    if (role === "seeker" && s.seekerPings && phase === "running" && myPos) {
+      const idx = pingIndexAt(g, now);
+      if (idx > lastSeekerPingIdx) {
+        lastSeekerPingIdx = idx;
+        db.set(gp(`seekerPings/${me.id}`), { lat: myPos.lat, lng: myPos.lng, t: now });
+      }
     }
     // Spielende (der Gastgeber trägt es ein)
     const w = winnerOf(g, now);
@@ -852,6 +947,7 @@ function renderInGame(g, role, mine, phase, r, now) {
   $("#ig-left").textContent = `${left} von ${hiders.length} Versteckern übrig`;
   $("#ig-zone").textContent = `Zone: ${Math.round(r)} m`;
   renderFound(g, role, mine, phase);
+  $("#sound-row").hidden = role !== "seeker";
   if (role === "seeker") {
     $("#ig-state").textContent = phase === "hiding" ? "Warte, bis die Versteckzeit vorbei ist." : "Finde sie!";
     $("#ig-hint").textContent = phase === "running"
@@ -882,6 +978,13 @@ function drawMap(g, role, center, r, now) {
         if (!ping || p.caught) continue;
         const age = now - ping.t;
         marker(ping, "ping" + (age > 60000 ? " old" : ""), `${p.name} · vor ${fmtClock(age)}`).addTo(dyn);
+      }
+    }
+    // Verstecker sehen die Sucher beim Ping (falls eingestellt)
+    if (role === "hider" && g.settings.seekerPings) {
+      for (const [pid, p] of seekersOf(g)) {
+        const sp = g.seekerPings?.[pid];
+        if (sp) marker(sp, "seeker", `${p.name} · vor ${fmtClock(now - sp.t)}`).addTo(dyn);
       }
     }
     // Sucher sehen andere Sucher live
@@ -919,7 +1022,7 @@ function renderEnd() {
 $("#btn-again").onclick = async () => {
   const players = {};
   for (const [pid, p] of Object.entries(game.players || {})) players[pid] = { name: p.name, role: p.role, caught: false };
-  await db.update(gp(), { status: "lobby", startedAt: null, winner: null, endedAt: null, pings: null, catches: null, seekers: null, players });
+  await db.update(gp(), { status: "lobby", startedAt: null, winner: null, endedAt: null, pings: null, seekers: null, seekerPings: null, players });
   if (isDemo) resetDemoBots();
 };
 
