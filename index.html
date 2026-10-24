@@ -243,6 +243,8 @@ input[type=range] { accent-color: var(--hider); }
       Die Demo funktioniert schon jetzt.
     </p>
 
+    <button id="rejoin" class="btn hider block" hidden></button>
+
     <button id="btn-demo" class="btn ghost block">Demo mit Bots ausprobieren</button>
   </div>
 </section>
@@ -322,7 +324,6 @@ input[type=range] { accent-color: var(--hider); }
         <p class="shrink-line" id="ig-shrink" hidden></p>
         <div id="found-box" hidden></div>
         <p class="hint" id="ig-hint"></p>
-        <label class="check" id="sound-row" hidden style="font-size:14px"><input id="sound-on" type="checkbox"> Ton bei neuen Pings</label>
       </div>
     </div>
 
@@ -531,7 +532,7 @@ document.addEventListener("click", () => {
     if (audioCtx.state === "suspended") audioCtx.resume();
   } catch {}
 }, true);
-function soundOn() { return store_get("fz-sound") !== "off"; }
+function soundOn() { return true; } // Sucher hören neue Pings immer
 function beep() {
   if (!audioCtx) return;
   try {
@@ -652,8 +653,6 @@ function showScreen(name) {
    Start / Beitreten / Demo
    ===================================================================== */
 $("#name-in").value = me.name;
-$("#sound-on").checked = soundOn();
-$("#sound-on").addEventListener("change", () => store_set("fz-sound", $("#sound-on").checked ? "on" : "off"));
 {
   // Einladungslink: ...?code=ABCD
   const inv = (new URLSearchParams(location.search).get("code") || "").toUpperCase();
@@ -707,10 +706,32 @@ $("#btn-join").onclick = async () => {
   db = makeFirebaseStore(); isDemo = false; code = c;
   const g = await db.get(gp());
   if (!g) { toast(`Kein Spiel mit dem Code ${c} gefunden.`); return; }
-  if (g.status !== "lobby" && !(g.players && g.players[me.id])) { toast("Dieses Spiel läuft schon."); return; }
+  if (g.status !== "lobby" && !(g.players && g.players[me.id])) {
+    // Wiedereinstieg mit gleichem Namen (z. B. anderes Gerät oder Browserdaten gelöscht)
+    const hit = Object.entries(g.players || {}).find(([, p]) => p.name.trim().toLowerCase() === me.name.toLowerCase());
+    if (!hit) { toast("Dieses Spiel läuft schon. Zum Wiedereinsteigen denselben Namen wie vorher eingeben.", 4500); return; }
+    me.id = hit[0]; store_set("fz-id", me.id);
+    toast(`Willkommen zurück, ${hit[1].name}!`);
+  }
   if (!(g.players && g.players[me.id])) await db.set(gp(`players/${me.id}`), { name: me.name, role: "hider", caught: false });
   enterGame();
 };
+
+/* Wiedereinstieg: Hat man ein laufendes Spiel nicht über "Verlassen" beendet
+   (Seite neu geladen, Tab geschlossen, Akku leer), bietet der Start einen Button an. */
+async function checkRejoin() {
+  const c = store_get("fz-game");
+  if (!c || !hasFirebase) return;
+  try {
+    const g = await makeFirebaseStore().get(`games/${c}`);
+    if (g && g.status !== "ended" && g.players?.[me.id]) {
+      $("#rejoin").textContent = `Zurück ins Spiel ${c}`;
+      $("#rejoin").hidden = false;
+      $("#rejoin").onclick = () => { db = makeFirebaseStore(); isDemo = false; code = c; enterGame(); };
+    } else store_set("fz-game", "");
+  } catch {}
+}
+checkRejoin();
 
 $("#btn-demo").onclick = async () => {
   me.name = $("#name-in").value.trim() || "Du";
@@ -734,6 +755,8 @@ $("#btn-demo").onclick = async () => {
 };
 
 function enterGame() {
+  if (!isDemo) store_set("fz-game", code);
+  $("#rejoin").hidden = true;
   showScreen("play");
   viewSet = false;
   startGeo();
@@ -747,6 +770,7 @@ function enterGame() {
 
 function leave() {
   if (unsub) unsub(); unsub = null;
+  store_set("fz-game", "");
   if (db && code && game && !isDemo) {
     // Der Gastgeber räumt das Spiel samt Standorten auf, wenn er geht.
     if (game.host === me.id && game.status !== "started") db.remove(gp());
@@ -758,6 +782,7 @@ function leave() {
   dyn.clearLayers(); banner(null);
   if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
   showScreen("start");
+  checkRejoin();
 }
 $("#btn-leave").onclick = leave;
 $("#btn-quit").onclick = leave;
@@ -902,6 +927,7 @@ function renderFound(g, role, mine, phase) {
   let rows = [];
   if (phase === "running") {
     if (role === "seeker") rows = hidersOf(g).filter(([, p]) => !p.caught).map(([pid, p]) => [pid, p.name]);
+    else if (!mine?.caught) rows = [[me.id, null]];
   }
   if (armed && armed.until < Date.now()) armed = null;
   box.hidden = rows.length === 0;
@@ -963,6 +989,8 @@ function tick() {
     // Verstecker: Ping senden
     if (role === "hider" && !mine?.caught && phase === "running" && myPos) {
       const idx = pingIndexAt(g, now);
+      const tl = timeline(g), sentAlready = (g.pings?.[me.id]?.t || 0) >= tl.hideEnd + idx * tl.pingMs;
+      if (idx > lastPingIdx && sentAlready) lastPingIdx = idx; // nach Wiedereinstieg: diesen Ping gab es schon
       if (idx > lastPingIdx) {
         lastPingIdx = idx;
         db.set(gp(`pings/${me.id}`), { lat: myPos.lat, lng: myPos.lng, t: now });
@@ -1008,6 +1036,8 @@ function tick() {
     // Sucher: beim Ping die eigene Position für Verstecker zeigen (falls eingestellt)
     if (role === "seeker" && s.seekerPings && phase === "running" && myPos) {
       const idx = pingIndexAt(g, now);
+      const tl = timeline(g);
+      if (idx > lastSeekerPingIdx && (g.seekerPings?.[me.id]?.t || 0) >= tl.hideEnd + idx * tl.pingMs) lastSeekerPingIdx = idx;
       if (idx > lastSeekerPingIdx) {
         lastSeekerPingIdx = idx;
         db.set(gp(`seekerPings/${me.id}`), { lat: myPos.lat, lng: myPos.lng, t: now });
@@ -1055,7 +1085,6 @@ function renderInGame(g, role, mine, phase, r, now) {
     }
   }
   renderFound(g, role, mine, phase);
-  $("#sound-row").hidden = role !== "seeker";
   if (role === "seeker") {
     $("#ig-state").textContent = phase === "hiding" ? "Warte, bis die Versteckzeit vorbei ist." : "Finde sie!";
     $("#ig-hint").textContent = phase === "running"
@@ -1064,7 +1093,7 @@ function renderInGame(g, role, mine, phase, r, now) {
   } else {
     if (mine?.caught) { $("#ig-state").textContent = "Du bist raus."; $("#ig-hint").textContent = "Schau zu, wie die anderen sich schlagen."; }
     else if (phase === "hiding") { $("#ig-state").textContent = "Versteck dich!"; $("#ig-hint").textContent = "Bleib innerhalb des Kreises. Gleich kommt der erste Ping."; }
-    else { $("#ig-state").textContent = "Bleib versteckt."; $("#ig-hint").textContent = "Bei jedem Ping sehen die Sucher, wo du gerade bist. Halt dein Handy entsperrt, sonst fällt der Ping aus."; }
+    else { $("#ig-state").textContent = "Bleib versteckt."; $("#ig-hint").textContent = "Bei jedem Ping sehen die Sucher, wo du gerade bist. Halt dein Handy entsperrt, sonst fällt der Ping aus. Sieht dich ein Sucher, tippe auf „Ich wurde gefunden“."; }
   }
 }
 
