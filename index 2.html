@@ -1,0 +1,1204 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#101826">
+<title>Fangzone</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap">
+<style>
+/* Layout: Vollbild-Karte, oben eine Statusleiste, unten ein Panel. Ein Look (Abenddämmerung), bewusst nur dunkel. */
+:root {
+  --night: #101826;
+  --panel: #182235;
+  --panel-2: #212d44;
+  --line: #2f3c57;
+  --text: #eef2fa;
+  --muted: #9aa7c0;
+  --seeker: #ff7a2f;   /* Sucher: Signalorange */
+  --hider: #46d6b0;    /* Verstecker: Minzgrün */
+  --danger: #ff5470;
+  --zone-next: #ffc845; /* nächste (kleinere) Zone */
+  --display: "Bricolage Grotesque", "Arial Black", system-ui, sans-serif;
+  --body: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--night); color: var(--text); font: 16px/1.45 var(--body); -webkit-tap-highlight-color: transparent; }
+[hidden] { display: none !important; }
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--hider); outline-offset: 2px; }
+
+/* ---------- Startbildschirm ---------- */
+#start {
+  min-height: 100%;
+  display: grid; place-items: center;
+  padding-block: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-bottom));
+  padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right));
+  background:
+    radial-gradient(circle at 50% 38%, transparent 0 60px, rgba(70,214,176,.08) 61px 62px, transparent 63px 120px, rgba(70,214,176,.06) 121px 122px, transparent 123px 190px, rgba(70,214,176,.04) 191px 192px, transparent 193px),
+    var(--night);
+}
+.start-card { width: 100%; max-width: 380px; display: grid; gap: 22px; }
+.brand { text-align: center; display: grid; gap: 6px; }
+.brand h1 { font: 800 clamp(44px, 14vw, 64px)/0.95 var(--display); letter-spacing: -0.02em; margin: 0; }
+.brand h1 span { color: var(--seeker); }
+.brand p { margin: 0; color: var(--muted); }
+.field { display: grid; gap: 6px; }
+.label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+input[type=text] {
+  width: 100%; padding: 14px 16px; border-radius: 12px;
+  background: var(--panel); border: 1px solid var(--line);
+}
+input[type=text]:focus { border-color: var(--hider); outline: none; }
+.row { display: flex; gap: 10px; }
+.row > * { min-width: 0; }
+.btn {
+  border: 0; border-radius: 12px; padding: 14px 18px; font-weight: 700;
+  background: var(--panel-2); border: 1px solid var(--line);
+}
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn.primary { background: var(--seeker); border-color: var(--seeker); color: #1a0d03; }
+.btn.hider { background: var(--hider); border-color: var(--hider); color: #04241b; }
+.btn.ghost { background: transparent; }
+.btn.block { width: 100%; }
+#code-in { text-transform: uppercase; font-family: var(--mono); letter-spacing: .2em; }
+.note { font-size: 14px; color: var(--muted); background: var(--panel); border: 1px dashed var(--line); border-radius: 12px; padding: 12px 14px; }
+.divider { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; }
+.divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+/* ---------- Spielansicht ---------- */
+#play { position: fixed; inset: 0; }
+#map { position: absolute; inset: 0; background: #1b2232; }
+.leaflet-container { font-family: var(--body); }
+.leaflet-control-attribution { font-size: 10px; }
+
+#topbar {
+  position: absolute; z-index: 1000; left: 0; right: 0; top: 0;
+  padding-top: calc(env(safe-area-inset-top, 0px) + 10px);
+  padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right));
+  display: flex; gap: 8px; align-items: stretch; pointer-events: none;
+}
+.chip {
+  pointer-events: auto;
+  background: rgba(16,24,38,.92); border: 1px solid var(--line); border-radius: 12px;
+  padding: 8px 12px; display: grid; gap: 0; min-width: 0;
+  backdrop-filter: blur(6px);
+}
+.chip .k { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 700; white-space: nowrap; }
+.chip .v { font: 700 20px/1.2 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.chip.grow { flex: 1; }
+.role-seeker { color: var(--seeker); }
+.role-hider { color: var(--hider); }
+
+#banner {
+  position: absolute; z-index: 1000; left: 50%; transform: translateX(-50%);
+  top: calc(env(safe-area-inset-top, 0px) + 78px);
+  width: min(92%, 420px); text-align: center;
+  background: var(--danger); color: #2a0610; font-weight: 700;
+  border-radius: 12px; padding: 10px 14px;
+}
+#banner.info { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); font-weight: 500; font-size: 14px; }
+
+/* Panel einklappen */
+.sheet-handle {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  background: transparent; border: 0; padding: 0 0 2px; text-align: left; min-height: 28px;
+}
+.sheet-handle .grip { width: 36px; height: 5px; border-radius: 3px; background: var(--line); flex: none; }
+.sheet-handle .peek { flex: 1; min-width: 0; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sheet-handle .chev { color: var(--muted); font-size: 13px; font-weight: 700; white-space: nowrap; }
+#sheet.collapsed > :not(.sheet-handle) { display: none !important; }
+#sheet.collapsed { gap: 0; }
+
+/* "Zu mir"-Button über dem Panel */
+#btn-me {
+  position: absolute; z-index: 1000;
+  right: max(12px, env(safe-area-inset-right));
+  bottom: calc(var(--sheet-h, 140px) + 12px);
+  width: 48px; height: 48px; border-radius: 50%;
+  background: rgba(16,24,38,.92); border: 1px solid var(--line); color: #4aa3ff;
+  display: grid; place-items: center; box-shadow: 0 4px 14px rgba(0,0,0,.35);
+}
+#btn-me svg { width: 24px; height: 24px; }
+
+#sheet {
+  position: absolute; z-index: 1000; left: 0; right: 0; bottom: 0;
+  max-height: 62%; overflow-y: auto;
+  background: var(--panel); border-top: 1px solid var(--line);
+  border-radius: 20px 20px 0 0;
+  padding-block: 16px calc(env(safe-area-inset-bottom, 0px) + 16px);
+  padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right));
+  display: grid; gap: 14px;
+  box-shadow: 0 -10px 30px rgba(0,0,0,.35);
+}
+.sheet-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.sheet-head h2 { margin: 0; font: 800 24px/1.1 var(--display); }
+.code-big { font: 700 26px/1 var(--mono); letter-spacing: .18em; color: var(--hider); }
+.players { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.players li {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  background: var(--panel-2); border-radius: 10px; padding: 8px 10px;
+}
+.players .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.players .you { color: var(--muted); font-size: 13px; }
+.pill {
+  border: 1px solid currentColor; border-radius: 999px; padding: 3px 10px;
+  font-size: 13px; font-weight: 700; background: transparent; white-space: nowrap;
+}
+.pill.seeker { color: var(--seeker); }
+.pill.hider { color: var(--hider); }
+.pill.out { color: var(--muted); }
+#play.flash::after { content: ""; position: absolute; inset: 0; z-index: 1500; pointer-events: none; box-shadow: inset 0 0 0 8px var(--hider); animation: flash 1s ease-out forwards; }
+#play.flash.danger::after { box-shadow: inset 0 0 0 14px var(--danger), inset 0 0 60px 20px rgba(255,84,112,.45); }
+@keyframes flash { from { opacity: 1; } to { opacity: 0; } }
+.invite-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.invite-row .btn { flex: 1; }
+.pill.armed { background: var(--seeker); color: #1a0d03; }
+#found-box .players li { padding: 10px 12px; }
+#found-box .pill { padding: 8px 14px; font-size: 15px; }
+button.pill:disabled { cursor: default; opacity: 1; }
+.settings { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.settings .wide { grid-column: 1 / -1; }
+.settings label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+.settings select, .settings input[type=range] { width: 100%; }
+.settings select { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+input[type=range] { accent-color: var(--hider); }
+.check { display: flex !important; grid-template-columns: none; align-items: center; gap: 10px; color: var(--text) !important; font-size: 15px !important; }
+.check input { width: 20px; height: 20px; accent-color: var(--hider); }
+.summary { color: var(--muted); font-size: 14px; margin: 0; }
+.hint { font-size: 13px; color: var(--muted); margin: 0; }
+
+.gotcha {
+  width: 100%; border: 0; border-radius: 16px; padding: 18px;
+  font: 800 28px/1 var(--display); letter-spacing: .02em;
+  background: var(--seeker); color: #1a0d03;
+  box-shadow: 0 6px 0 #a8461a;
+  transition: transform .08s;
+}
+.gotcha:active:not(:disabled) { transform: translateY(4px); box-shadow: 0 2px 0 #a8461a; }
+.gotcha:disabled { background: var(--panel-2); color: var(--muted); box-shadow: none; }
+.shrink-line { margin: 0; font-weight: 700; color: var(--zone-next); font-variant-numeric: tabular-nums; }
+.shrink-line.warn { color: var(--danger); }
+.status-line { display: flex; justify-content: space-between; gap: 10px; font-size: 14px; color: var(--muted); flex-wrap: wrap; }
+.big-state { font: 800 22px/1.15 var(--display); margin: 0; }
+
+#toast {
+  position: fixed; z-index: 2000; left: 50%; transform: translateX(-50%);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 50%);
+  background: var(--text); color: var(--night); font-weight: 700;
+  padding: 12px 18px; border-radius: 12px; max-width: 90%; text-align: center;
+  box-shadow: 0 8px 30px rgba(0,0,0,.4);
+}
+
+/* Kartenmarker */
+.mk { display: grid; justify-items: center; transform: translateY(-4px); }
+.mk .dot { width: 18px; height: 18px; border-radius: 50%; border: 3px solid #fff; box-shadow: 0 0 0 2px rgba(0,0,0,.35); }
+.mk .tag {
+  margin-top: 3px; background: rgba(16,24,38,.9); color: #fff; font: 600 11px/1.2 var(--body);
+  padding: 2px 6px; border-radius: 6px; white-space: nowrap;
+}
+.mk.me .dot { background: #4aa3ff; }
+.mk.me .dot::after { content: ""; }
+.mk.seeker .dot { background: var(--seeker); }
+.mk.ping .dot { background: var(--hider); animation: pulse 1.6s ease-out infinite; }
+.mk.ping.old .dot { opacity: .55; animation: none; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(70,214,176,.7); } 100% { box-shadow: 0 0 0 18px rgba(70,214,176,0); } }
+@media (prefers-reduced-motion: reduce) { .mk.ping .dot { animation: none; } .gotcha { transition: none; } }
+</style>
+</head>
+<body>
+
+<!-- ================= Start ================= -->
+<section id="start">
+  <div class="start-card">
+    <div class="brand">
+      <h1>Fang<span>zone</span></h1>
+      <p>Verstecken in echt. Mit Karte und Pings.</p>
+    </div>
+
+    <p id="invite-note" class="note" hidden></p>
+
+    <div class="field">
+      <label class="label" for="name-in">Dein Name</label>
+      <input id="name-in" type="text" maxlength="16" placeholder="z. B. Alex" autocomplete="nickname">
+    </div>
+
+    <button id="btn-create" class="btn primary block">Neues Spiel erstellen</button>
+
+    <div class="divider">oder beitreten</div>
+    <div class="row">
+      <input id="code-in" type="text" maxlength="4" placeholder="CODE" autocomplete="off" aria-label="Spielcode">
+      <button id="btn-join" class="btn hider">Beitreten</button>
+    </div>
+
+    <p id="setup-note" class="note" hidden>
+      Mehrspieler ist noch nicht eingerichtet: Trag deine Firebase-Daten oben im Code bei <b>FIREBASE_CONFIG</b> ein.
+      Die Demo funktioniert schon jetzt.
+    </p>
+
+    <button id="btn-demo" class="btn ghost block">Demo mit Bots ausprobieren</button>
+  </div>
+</section>
+
+<!-- ================= Spiel ================= -->
+<section id="play" hidden>
+  <div id="map"></div>
+
+  <div id="topbar">
+    <div class="chip"><span class="k">Rolle</span><span class="v" id="tb-role">–</span></div>
+    <div class="chip grow"><span class="k" id="tb-phase-k">Lobby</span><span class="v" id="tb-phase">–</span></div>
+    <div class="chip" id="tb-ping-chip"><span class="k">Nächster Ping</span><span class="v" id="tb-ping">–</span></div>
+  </div>
+
+  <div id="banner" hidden></div>
+
+  <button id="btn-me" aria-label="Karte auf mich zentrieren" title="Zu mir">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4" fill="currentColor"/><circle cx="12" cy="12" r="8"/><path d="M12 1v3M12 20v3M1 12h3M20 12h3"/></svg>
+  </button>
+
+  <div id="sheet">
+    <button id="sheet-toggle" class="sheet-handle" aria-expanded="true">
+      <span class="grip"></span><span class="peek" id="peek-text" hidden></span><span class="chev" id="sheet-chev">Einklappen ▾</span>
+    </button>
+    <!-- Lobby -->
+    <div id="lobby" hidden>
+      <div style="display:grid;gap:14px">
+        <div class="sheet-head">
+          <h2>Lobby</h2>
+          <div style="text-align:right">
+            <div class="label">Spielcode</div>
+            <div class="code-big" id="lobby-code">––––</div>
+          </div>
+        </div>
+        <div class="invite-row"><button id="btn-invite" class="btn hider">Freunde einladen</button></div>
+        <ul class="players" id="lobby-players"></ul>
+        <p class="hint" id="role-hint">Tippe auf eine Rolle, um sie zu wechseln.</p>
+
+        <div id="host-settings" class="settings">
+          <label class="wide">Spielfeld-Radius: <b id="radius-val">300 m</b>
+            <input id="set-radius" type="range" min="100" max="1500" step="50" value="300">
+          </label>
+          <label>Ping alle
+            <select id="set-ping">
+              <option value="1">1 Min.</option><option value="2" selected>2 Min.</option><option value="3">3 Min.</option>
+              <option value="5">5 Min.</option><option value="10">10 Min.</option>
+            </select>
+          </label>
+          <label>Spieldauer
+            <select id="set-dur">
+              <option value="15">15 Min.</option><option value="20">20 Min.</option><option value="30" selected>30 Min.</option>
+              <option value="45">45 Min.</option><option value="60">60 Min.</option><option value="90">90 Min.</option>
+            </select>
+          </label>
+          <label>Versteckzeit
+            <select id="set-hide">
+              <option value="1">1 Min.</option><option value="2">2 Min.</option><option value="3" selected>3 Min.</option>
+              <option value="5">5 Min.</option><option value="10">10 Min.</option>
+            </select>
+          </label>
+          <label class="check wide"><input id="set-shrink" type="checkbox"> Zone schrumpft alle 5 Min.</label>
+          <label class="check wide"><input id="set-seekerpings" type="checkbox"> Verstecker sehen die Sucher beim Ping</label>
+          <p class="hint wide">Tippe auf die Karte, um die Mitte des Spielfelds zu setzen.</p>
+        </div>
+        <p id="guest-settings" class="summary" hidden></p>
+
+        <button id="btn-start" class="btn primary block">Spiel starten</button>
+        <button id="btn-leave" class="btn ghost block">Lobby verlassen</button>
+      </div>
+    </div>
+
+    <!-- Laufendes Spiel -->
+    <div id="ingame" hidden>
+      <div style="display:grid;gap:12px">
+        <p class="big-state" id="ig-state">–</p>
+        <div class="status-line"><span id="ig-left">–</span><span id="ig-zone">–</span></div>
+        <p class="shrink-line" id="ig-shrink" hidden></p>
+        <div id="found-box" hidden></div>
+        <p class="hint" id="ig-hint"></p>
+        <label class="check" id="sound-row" hidden style="font-size:14px"><input id="sound-on" type="checkbox"> Ton bei neuen Pings</label>
+      </div>
+    </div>
+
+    <!-- Ende -->
+    <div id="ended" hidden>
+      <div style="display:grid;gap:14px">
+        <h2 class="big-state" id="end-title" style="font-size:30px">–</h2>
+        <ul class="players" id="end-players"></ul>
+        <button id="btn-again" class="btn primary block">Neue Runde</button>
+        <button id="btn-quit" class="btn ghost block">Zum Start</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div id="toast" hidden></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script>
+/* =====================================================================
+   1) HIER DEINE FIREBASE-DATEN EINTRAGEN
+   (Firebase-Konsole → Projekteinstellungen → "Meine Apps" → Web-App)
+   ===================================================================== */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyBlxrhhAf99LcEsalS-Arq_qiIgVCfmv-A",
+  authDomain: "fangzone.firebaseapp.com",
+  databaseURL: "https://fangzone-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "fangzone",
+  storageBucket: "fangzone.firebasestorage.app",
+  messagingSenderId: "322237229344",
+  appId: "1:322237229344:web:8eb493e54e11688046cf45"
+};
+
+/* =====================================================================
+   2) Spielregeln (kannst du anpassen)
+   ===================================================================== */
+const CATCH_RADIUS_M = 20;     // so nah muss ein Sucher sein
+const ZONE_GRACE_S = 60;       // so lange darf man außerhalb der Zone sein
+const SHRINK_EVERY_MIN = 5;    // Zone schrumpft alle X Minuten ...
+const SHRINK_FACTOR = 0.85;    // ... auf 85 % des Radius
+const SHRINK_MIN_SHARE = 0.3;  // aber nie kleiner als 30 % des Start-Radius
+const DEMO_CENTER = { lat: 52.4731, lng: 13.4015 }; // Tempelhofer Feld, Berlin
+
+/* ===================================================================== */
+const $ = (s) => document.querySelector(s);
+const hasFirebase = !!(FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.databaseURL && window.firebase);
+
+function store_get(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function store_set(k, v) { try { localStorage.setItem(k, v); } catch {} }
+
+function randomId(n = 10) {
+  const a = "abcdefghijkmnpqrstuvwxyz23456789";
+  let s = ""; for (let i = 0; i < n; i++) s += a[Math.floor(Math.random() * a.length)];
+  return s;
+}
+function escapeHtml(s) { return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+
+/** Entfernung in Metern zwischen zwei Punkten (Haversine). */
+function distM(a, b) {
+  const R = 6371000, toRad = (d) => d * Math.PI / 180;
+  const dLat = toRad(b.lat - a.lat), dLng = toRad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+/** Punkt um dx/dy Meter verschieben. */
+function offsetM(p, dx, dy) {
+  return { lat: p.lat + dy / 111320, lng: p.lng + dx / (111320 * Math.cos(p.lat * Math.PI / 180)) };
+}
+/** " · 120 m" bzw. " · 1,2 km" vom eigenen Standort aus */
+function distLabel(p) {
+  if (!myPos) return "";
+  const d = distM(myPos, p);
+  return d < 1000 ? ` · ${Math.max(10, Math.round(d / 10) * 10)} m` : ` · ${(d / 1000).toFixed(1).replace(".", ",")} km`;
+}
+function fmtClock(ms) {
+  ms = Math.max(0, ms);
+  const s = Math.ceil(ms / 1000), m = Math.floor(s / 60);
+  return `${m}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/* ---------- Spielzeit-Logik (reine Funktionen) ---------- */
+function timeline(g) {
+  const s = g.settings, start = g.startedAt;
+  const hideEnd = start + s.hideMin * 60000;
+  const runEnd = hideEnd + s.durationMin * 60000;
+  return { hideEnd, runEnd, pingMs: s.pingMin * 60000 };
+}
+function phaseAt(g, now) {
+  if (g.status === "lobby") return "lobby";
+  if (g.status === "ended") return "ended";
+  const t = timeline(g);
+  if (now < t.hideEnd) return "hiding";
+  if (now < t.runEnd) return "running";
+  return "over";
+}
+function zoneRadiusAt(g, now) {
+  const s = g.settings;
+  if (!s.shrink || g.status === "lobby") return s.radius;
+  const t = timeline(g);
+  if (now < t.hideEnd) return s.radius;
+  const steps = Math.floor((now - t.hideEnd) / (SHRINK_EVERY_MIN * 60000));
+  return Math.max(s.radius * SHRINK_MIN_SHARE, s.radius * Math.pow(SHRINK_FACTOR, steps));
+}
+/** Nächste Verkleinerung: { at, radius } oder null, wenn nichts mehr schrumpft. */
+function nextShrink(g, now) {
+  const s = g.settings;
+  if (!s.shrink || g.status !== "started") return null;
+  const t = timeline(g), step = SHRINK_EVERY_MIN * 60000;
+  const k = now < t.hideEnd ? 1 : Math.floor((now - t.hideEnd) / step) + 1;
+  const at = t.hideEnd + k * step;
+  if (at >= t.runEnd) return null;
+  const cur = zoneRadiusAt(g, now);
+  const radius = Math.max(s.radius * SHRINK_MIN_SHARE, s.radius * Math.pow(SHRINK_FACTOR, k));
+  if (radius >= cur - 0.5) return null;
+  return { at, radius };
+}
+function pingIndexAt(g, now) {
+  const t = timeline(g);
+  if (now < t.hideEnd) return -1;
+  return Math.floor((now - t.hideEnd) / t.pingMs);
+}
+function nextPingAt(g, now) {
+  const t = timeline(g);
+  return t.hideEnd + (pingIndexAt(g, now) + 1) * t.pingMs;
+}
+function hidersOf(g) { return Object.entries(g.players || {}).filter(([, p]) => p.role === "hider"); }
+function seekersOf(g) { return Object.entries(g.players || {}).filter(([, p]) => p.role === "seeker"); }
+function winnerOf(g, now) {
+  const hiders = hidersOf(g);
+  if (hiders.length && hiders.every(([, p]) => p.caught)) return "seekers";
+  if (phaseAt(g, now) === "over") return "hiders";
+  return null;
+}
+
+/* =====================================================================
+   Datenspeicher: Firebase (echt) oder lokal (Demo). Gleiche Schnittstelle.
+   ===================================================================== */
+function makeFirebaseStore() {
+  if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+  const db = firebase.database();
+  let offset = 0;
+  db.ref(".info/serverTimeOffset").on("value", (s) => { offset = s.val() || 0; });
+  return {
+    now: () => Date.now() + offset,
+    on(path, cb) { const r = db.ref(path); const h = r.on("value", (s) => cb(s.val())); return () => r.off("value", h); },
+    get: (path) => db.ref(path).get().then((s) => s.val()),
+    set: (path, v) => db.ref(path).set(v),
+    update: (path, v) => db.ref(path).update(v),
+    push: (path, v) => db.ref(path).push(v),
+    remove: (path) => db.ref(path).remove(),
+  };
+}
+
+function makeLocalStore() {
+  const root = {};
+  const listeners = new Set();
+  const parts = (p) => p.split("/").filter(Boolean);
+  const clone = (v) => (v === undefined ? null : JSON.parse(JSON.stringify(v)));
+  const getAt = (p) => parts(p).reduce((o, k) => (o == null ? undefined : o[k]), root);
+  const related = (a, b) => (a + "/").startsWith(b + "/") || (b + "/").startsWith(a + "/");
+  function notify(p) {
+    for (const l of listeners) if (related(p, l.path)) setTimeout(() => listeners.has(l) && l.cb(clone(getAt(l.path))), 0);
+  }
+  function setAt(p, v) {
+    const ks = parts(p); let o = root;
+    for (const k of ks.slice(0, -1)) { if (typeof o[k] !== "object" || o[k] === null) o[k] = {}; o = o[k]; }
+    const last = ks[ks.length - 1];
+    if (v === null || v === undefined) delete o[last]; else o[last] = clone(v);
+    notify(p);
+  }
+  return {
+    now: () => Date.now(),
+    on(path, cb) { const l = { path, cb }; listeners.add(l); setTimeout(() => cb(clone(getAt(path))), 0); return () => listeners.delete(l); },
+    get: (path) => Promise.resolve(clone(getAt(path))),
+    set: (path, v) => (setAt(path, v), Promise.resolve()),
+    update: (path, obj) => { for (const k in obj) setAt(path + "/" + k, obj[k]); return Promise.resolve(); },
+    push: (path, v) => { const key = "k" + Date.now().toString(36) + randomId(4); setAt(path + "/" + key, v); return Promise.resolve({ key }); },
+    remove: (path) => (setAt(path, null), Promise.resolve()),
+  };
+}
+
+/* =====================================================================
+   Zustand
+   ===================================================================== */
+let me = { id: store_get("fz-id") || randomId(), name: store_get("fz-name") || "" };
+store_set("fz-id", me.id);
+
+let db = null, code = null, game = null, isDemo = false, unsub = null;
+let myPos = null, manualPos = false, geoWatch = null;
+let lastPingIdx = -1, outsideSince = null, handledCatches = new Set(), lastSeekerWrite = 0;
+let prevCaught = {}, pendingGotcha = null, wakeLock = null, demo = null, viewSet = false;
+let tickTimer = null;
+
+const gp = (sub = "") => `games/${code}${sub ? "/" + sub : ""}`;
+
+let lastSeekerPingIdx = -1, lastSeenPingT = 0;
+
+/* ---------- Signal bei Pings: Vibration (Android), Ton (nur Sucher), Bildschirm-Blitz ---------- */
+let audioCtx = null;
+document.addEventListener("click", () => {
+  // Browser erlauben Ton erst nach einem Tippen, darum hier "aufwecken"
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+  } catch {}
+}, true);
+function soundOn() { return store_get("fz-sound") !== "off"; }
+function beep() {
+  if (!audioCtx) return;
+  try {
+    const t = audioCtx.currentTime;
+    [[0, 880], [0.18, 1180]].forEach(([d, f]) => {
+      const o = audioCtx.createOscillator(), gn = audioCtx.createGain();
+      o.type = "sine"; o.frequency.value = f;
+      gn.gain.setValueAtTime(0.0001, t + d);
+      gn.gain.exponentialRampToValueAtTime(0.3, t + d + 0.02);
+      gn.gain.exponentialRampToValueAtTime(0.0001, t + d + 0.16);
+      o.connect(gn).connect(audioCtx.destination);
+      o.start(t + d); o.stop(t + d + 0.18);
+    });
+  } catch {}
+}
+function signal(withSound, danger = false) {
+  try { if (navigator.vibrate) navigator.vibrate(danger ? [400, 150, 400, 150, 400] : [200, 100, 200]); } catch {}
+  if (withSound) beep();
+  const el = document.getElementById("play");
+  el.classList.remove("flash", "danger"); void el.offsetWidth;
+  el.classList.add("flash"); if (danger) el.classList.add("danger");
+}
+let lastZoneAlert = 0, lastShrinkWarnAt = 0;
+
+/* =====================================================================
+   Karte
+   ===================================================================== */
+const map = L.map("map", { zoomControl: false, attributionControl: true }).setView([DEMO_CENTER.lat, DEMO_CENTER.lng], 15);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+}).addTo(map);
+const dyn = L.layerGroup().addTo(map);
+
+/* "Zu mir"-Button */
+document.getElementById("btn-me").onclick = () => {
+  if (!myPos) { toast("Noch kein Standort."); return; }
+  map.setView([myPos.lat, myPos.lng], Math.max(map.getZoom(), 17));
+};
+
+/* Panel ein- und ausklappen */
+let sheetCollapsed = false;
+function setSheetCollapsed(c) {
+  sheetCollapsed = c;
+  const sh = document.getElementById("sheet");
+  sh.classList.toggle("collapsed", c);
+  document.getElementById("sheet-toggle").setAttribute("aria-expanded", String(!c));
+  document.getElementById("sheet-chev").textContent = c ? "Ausklappen ▴" : "Einklappen ▾";
+  document.getElementById("peek-text").hidden = !c;
+}
+document.getElementById("sheet-toggle").onclick = () => setSheetCollapsed(!sheetCollapsed);
+// Höhe des Panels merken, damit der "Zu mir"-Button immer darüber sitzt
+try {
+  new ResizeObserver(() => document.getElementById("play").style.setProperty("--sheet-h", document.getElementById("sheet").offsetHeight + "px"))
+    .observe(document.getElementById("sheet"));
+} catch {}
+
+function marker(pos, cls, label) {
+  const icon = L.divIcon({
+    className: "", iconSize: [0, 0],
+    html: `<div class="mk ${cls}" style="transform:translate(-50%,-12px)"><div class="dot"></div>${label ? `<div class="tag">${escapeHtml(label)}</div>` : ""}</div>`
+  });
+  return L.marker([pos.lat, pos.lng], { icon, interactive: false });
+}
+
+map.on("click", (e) => {
+  const p = { lat: e.latlng.lat, lng: e.latlng.lng };
+  if (!game) return;
+  if (game.status === "lobby" && game.host === me.id) {
+    db.update(gp("settings"), { centerLat: p.lat, centerLng: p.lng });
+    return;
+  }
+  if (manualPos) { myPos = p; tick(); }
+});
+
+/* =====================================================================
+   GPS
+   ===================================================================== */
+function startGeo() {
+  if (isDemo) { manualPos = true; return; }
+  if (!("geolocation" in navigator)) { manualPos = true; return; }
+  geoWatch = navigator.geolocation.watchPosition(
+    (pos) => {
+      manualPos = false;
+      myPos = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy };
+      if (!viewSet) { map.setView([myPos.lat, myPos.lng], 16); viewSet = true; }
+    },
+    () => { manualPos = true; if (!myPos) myPos = { ...map.getCenter() }; },
+    { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 }
+  );
+}
+function stopGeo() { if (geoWatch != null) navigator.geolocation.clearWatch(geoWatch); geoWatch = null; }
+
+async function keepAwake() {
+  try { if ("wakeLock" in navigator && !wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.addEventListener("release", () => (wakeLock = null)); } } catch {}
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && game && game.status !== "lobby") keepAwake(); });
+
+/* =====================================================================
+   UI-Helfer
+   ===================================================================== */
+let toastTimer = null;
+function toast(msg, ms = 2600) {
+  const t = $("#toast"); t.textContent = msg; t.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), ms);
+}
+function banner(msg, kind = "") {
+  const b = $("#banner");
+  if (!msg) { b.hidden = true; return; }
+  b.textContent = msg; b.className = kind; b.hidden = false;
+}
+function showScreen(name) {
+  $("#start").hidden = name !== "start";
+  $("#play").hidden = name !== "play";
+  if (name === "play") setTimeout(() => map.invalidateSize(), 50);
+}
+
+/* =====================================================================
+   Start / Beitreten / Demo
+   ===================================================================== */
+$("#name-in").value = me.name;
+$("#sound-on").checked = soundOn();
+$("#sound-on").addEventListener("change", () => store_set("fz-sound", $("#sound-on").checked ? "on" : "off"));
+{
+  // Einladungslink: ...?code=ABCD
+  const inv = (new URLSearchParams(location.search).get("code") || "").toUpperCase();
+  if (/^[A-Z]{4}$/.test(inv)) {
+    $("#code-in").value = inv;
+    $("#invite-note").textContent = `Du wurdest zu Spiel ${inv} eingeladen. Gib deinen Namen ein und tippe auf „Beitreten“.`;
+    $("#invite-note").hidden = false;
+  }
+}
+$("#setup-note").hidden = hasFirebase;
+$("#btn-create").disabled = !hasFirebase;
+$("#btn-join").disabled = !hasFirebase;
+
+function readName() {
+  const n = $("#name-in").value.trim();
+  if (!n) { toast("Gib zuerst deinen Namen ein."); $("#name-in").focus(); return null; }
+  me.name = n; store_set("fz-name", n); return n;
+}
+
+function newCode() {
+  const a = "ABCDEFGHJKLMNPQRSTUVWXYZ"; let s = "";
+  for (let i = 0; i < 4; i++) s += a[Math.floor(Math.random() * a.length)];
+  return s;
+}
+
+function defaultSettings(center) {
+  return {
+    radius: 300, pingMin: 2, durationMin: 30, hideMin: 3, shrink: false, seekerPings: false,
+    centerLat: center ? center.lat : null, centerLng: center ? center.lng : null,
+  };
+}
+
+$("#btn-create").onclick = async () => {
+  if (!readName()) return;
+  db = makeFirebaseStore(); isDemo = false;
+  code = newCode();
+  const existing = await db.get(gp("status"));
+  if (existing) code = newCode();
+  await db.set(gp(), {
+    host: me.id, status: "lobby", createdAt: db.now(),
+    settings: defaultSettings(myPos),
+    players: { [me.id]: { name: me.name, role: "seeker", caught: false } },
+  });
+  enterGame();
+};
+
+$("#btn-join").onclick = async () => {
+  if (!readName()) return;
+  const c = $("#code-in").value.trim().toUpperCase();
+  if (c.length !== 4) { toast("Der Code hat 4 Buchstaben."); return; }
+  db = makeFirebaseStore(); isDemo = false; code = c;
+  const g = await db.get(gp());
+  if (!g) { toast(`Kein Spiel mit dem Code ${c} gefunden.`); return; }
+  if (g.status !== "lobby" && !(g.players && g.players[me.id])) { toast("Dieses Spiel läuft schon."); return; }
+  if (!(g.players && g.players[me.id])) await db.set(gp(`players/${me.id}`), { name: me.name, role: "hider", caught: false });
+  enterGame();
+};
+
+$("#btn-demo").onclick = async () => {
+  me.name = $("#name-in").value.trim() || "Du";
+  db = makeLocalStore(); isDemo = true; code = "DEMO";
+  const c = DEMO_CENTER;
+  const bots = {
+    bot1: { name: "Mia (Bot)", role: "hider", caught: false },
+    bot2: { name: "Jonas (Bot)", role: "hider", caught: false },
+    bot3: { name: "Lea (Bot)", role: "hider", caught: false },
+  };
+  await db.set(gp(), {
+    host: me.id, status: "lobby", createdAt: db.now(),
+    // Demo: kurze Zeiten, damit man schnell etwas sieht (0,5 Min. = 30 s)
+    settings: { ...defaultSettings(c), radius: 250, pingMin: 0.5, hideMin: 0.25, durationMin: 10 },
+    players: { [me.id]: { name: me.name, role: "seeker", caught: false }, ...bots },
+  });
+  myPos = offsetM(c, 0, -180);
+  startDemoBots(c);
+  enterGame();
+  toast("Demo: Tippe auf die Karte, um dich zu bewegen.", 4000);
+};
+
+function enterGame() {
+  showScreen("play");
+  viewSet = false;
+  startGeo();
+  if (myPos && !viewSet) { map.setView([myPos.lat, myPos.lng], 16); viewSet = true; }
+  unsub = db.on(gp(), (g) => {
+    if (!g) { toast("Das Spiel wurde beendet."); leave(); return; }
+    game = g; onGameChange();
+  });
+  clearInterval(tickTimer); tickTimer = setInterval(tick, 1000);
+}
+
+function leave() {
+  if (unsub) unsub(); unsub = null;
+  if (db && code && game && !isDemo) {
+    // Der Gastgeber räumt das Spiel samt Standorten auf, wenn er geht.
+    if (game.host === me.id && game.status !== "started") db.remove(gp());
+    else if (game.status === "lobby") db.remove(gp(`players/${me.id}`));
+  }
+  clearInterval(tickTimer); stopGeo(); stopDemoBots();
+  if (catchesUnsub) catchesUnsub(); catchesUnsub = null;
+  game = null; code = null; lastPingIdx = -1; lastSeekerPingIdx = -1; lastSeenPingT = 0; outsideSince = null; handledCatches = new Set(); prevCaught = {};
+  dyn.clearLayers(); banner(null);
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  showScreen("start");
+}
+$("#btn-leave").onclick = leave;
+$("#btn-quit").onclick = leave;
+
+/* =====================================================================
+   Lobby
+   ===================================================================== */
+const settingInputs = { radius: "#set-radius", pingMin: "#set-ping", durationMin: "#set-dur", hideMin: "#set-hide" };
+for (const [key, sel] of Object.entries(settingInputs)) {
+  $(sel).addEventListener("input", () => {
+    if (key === "radius") $("#radius-val").textContent = `${$(sel).value} m`;
+  });
+  $(sel).addEventListener("change", () => db.update(gp("settings"), { [key]: Number($(sel).value) }));
+}
+$("#set-shrink").addEventListener("change", () => db.update(gp("settings"), { shrink: $("#set-shrink").checked }));
+$("#set-seekerpings").addEventListener("change", () => db.update(gp("settings"), { seekerPings: $("#set-seekerpings").checked }));
+
+/* Einladungslink teilen (WhatsApp usw.) oder kopieren */
+$("#btn-invite").onclick = async () => {
+  const url = `${location.origin}${location.pathname}?code=${code}`;
+  const text = `Spiel mit bei Fangzone! Code: ${code}`;
+  if (navigator.share) {
+    try { await navigator.share({ title: "Fangzone", text, url }); return; }
+    catch (e) { if (e && e.name === "AbortError") return; }
+  }
+  try { await navigator.clipboard.writeText(`${text}\n${url}`); toast("Link kopiert. Füg ihn z. B. in WhatsApp ein."); }
+  catch { toast(url, 8000); }
+};
+
+function roleButton(pid, p) {
+  const isOut = p.caught;
+  const cls = isOut ? "out" : p.role;
+  const text = isOut ? "gefunden" : (p.role === "seeker" ? "Sucher" : "Verstecker");
+  return `<button class="pill ${cls}" data-pid="${escapeHtml(pid)}">${text}</button>`;
+}
+
+function renderLobby() {
+  const g = game, isHost = g.host === me.id, s = g.settings;
+  $("#lobby-code").textContent = code;
+  $("#btn-invite").hidden = isDemo;
+  const list = Object.entries(g.players || {}).sort((a, b) => a[1].name.localeCompare(b[1].name));
+  $("#lobby-players").innerHTML = list.map(([pid, p]) => `
+    <li><span class="name">${escapeHtml(p.name)} ${pid === me.id ? '<span class="you">(du)</span>' : ""}${pid === g.host ? ' <span class="you">· Gastgeber</span>' : ""}</span>
+    ${roleButton(pid, p)}</li>`).join("");
+  $("#lobby-players").querySelectorAll("button.pill").forEach((b) => {
+    const pid = b.dataset.pid;
+    const can = isHost || pid === me.id;
+    b.disabled = !can;
+    b.onclick = () => {
+      const cur = g.players[pid].role;
+      db.update(gp(`players/${pid}`), { role: cur === "seeker" ? "hider" : "seeker" });
+    };
+  });
+  $("#role-hint").textContent = isHost ? "Tippe auf eine Rolle, um sie zu wechseln." : "Tippe auf deine Rolle, um sie zu wechseln.";
+
+  $("#host-settings").hidden = !isHost;
+  $("#guest-settings").hidden = isHost;
+  if (isHost) {
+    $("#set-radius").value = s.radius; $("#radius-val").textContent = `${s.radius} m`;
+    for (const [key, sel] of Object.entries(settingInputs)) if (key !== "radius" && document.activeElement !== $(sel)) {
+      const el = $(sel);
+      if (![...el.options].some((o) => Number(o.value) === s[key])) el.add(new Option(`${s[key] < 1 ? s[key] * 60 + " s" : s[key] + " Min."}`, s[key]));
+      el.value = String(s[key]);
+    }
+    $("#set-shrink").checked = !!s.shrink;
+    $("#set-seekerpings").checked = !!s.seekerPings;
+  } else {
+    $("#guest-settings").textContent =
+      `Spielfeld ${s.radius} m · Ping alle ${s.pingMin} Min. · ${s.durationMin} Min. Spielzeit · ${s.hideMin} Min. Versteckzeit${s.shrink ? " · Zone schrumpft" : ""}${s.seekerPings ? " · Verstecker sehen Sucher beim Ping" : ""}. Warte, bis der Gastgeber startet.`;
+  }
+  const ok = seekersOf(g).length > 0 && hidersOf(g).length > 0 && s.centerLat != null;
+  $("#btn-start").hidden = !isHost;
+  $("#btn-start").disabled = !ok;
+  $("#btn-start").textContent = s.centerLat == null ? "Erst Spielfeld-Mitte antippen" : (ok ? "Spiel starten" : "Mind. 1 Sucher und 1 Verstecker");
+}
+
+$("#btn-start").onclick = async () => {
+  const updates = { status: "started", startedAt: db.now(), winner: null, endedAt: null };
+  await db.update(gp(), updates);
+  keepAwake();
+};
+
+/* =====================================================================
+   Reaktion auf Datenänderungen
+   ===================================================================== */
+let lastStatus = null;
+function onGameChange() {
+  const g = game;
+  const status = g.status;
+  if (status !== lastStatus) { lastStatus = status; setSheetCollapsed(false); }
+  $("#lobby").hidden = status !== "lobby";
+  $("#ingame").hidden = status !== "started";
+  $("#ended").hidden = status !== "ended";
+
+  if (status === "lobby") {
+    renderLobby();
+    lastPingIdx = -1; lastSeekerPingIdx = -1; lastSeenPingT = 0; outsideSince = null; handledCatches = new Set(); prevCaught = {};
+  }
+  // Sucher: Signal, wenn neue Pings der Verstecker ankommen
+  if (status === "started" && g.players?.[me.id]?.role === "seeker") {
+    const newest = Math.max(0, ...hidersOf(g).map(([pid]) => g.pings?.[pid]?.t || 0));
+    if (newest > lastSeenPingT) { lastSeenPingT = newest; signal(soundOn()); }
+  }
+  if (status === "started") keepAwake();
+  if (status === "ended") renderEnd();
+
+  // Neu Gefangene melden
+  for (const [pid, p] of Object.entries(g.players || {})) {
+    if (p.caught && !prevCaught[pid] && status === "started") {
+      if (pid === me.id) toast(p.reason === "zone" ? "Du warst zu lange außerhalb der Zone. Du bist raus." : "Du wurdest gefunden!", 3500);
+      else toast(`${p.name} ${p.reason === "zone" ? "ist raus (Zone verlassen)" : "wurde gefunden!"}`);
+    }
+    prevCaught[pid] = !!p.caught;
+  }
+  tick();
+}
+
+/* Verstecker prüfen selbst, ob ein Sucher nah genug war (ihr Standort bleibt geheim). */
+let catchesUnsub = null;
+function watchCatches() {
+  if (catchesUnsub) return;
+  catchesUnsub = db.on(gp("catches"), (all) => {
+    if (!all || !game || game.status !== "started") return;
+    const p = game.players?.[me.id];
+    for (const [key, c] of Object.entries(all)) {
+      if (handledCatches.has(key)) continue;
+      handledCatches.add(key);
+      if (!p || p.role !== "hider" || p.caught || !myPos) continue;
+      if (db.now() - c.t > 30000) continue;
+      if (distM(myPos, c) <= CATCH_RADIUS_M) {
+        db.update(gp(`players/${me.id}`), { caught: true, caughtBy: c.by, caughtAt: db.now(), reason: "tag" });
+      }
+    }
+  });
+}
+
+/* "Gefunden" melden: Sucher tippen beim Namen, Verstecker können sich selbst melden.
+   Zweimal tippen zur Bestätigung, damit niemand versehentlich rausfliegt. */
+let armed = null, foundSig = "";
+function renderFound(g, role, mine, phase) {
+  const box = $("#found-box");
+  let rows = [];
+  if (phase === "running") {
+    if (role === "seeker") rows = hidersOf(g).filter(([, p]) => !p.caught).map(([pid, p]) => [pid, p.name]);
+  }
+  if (armed && armed.until < Date.now()) armed = null;
+  box.hidden = rows.length === 0;
+  const sig = JSON.stringify([rows, armed?.pid ?? null]);
+  if (sig === foundSig) return;
+  foundSig = sig;
+  box.innerHTML = '<ul class="players">' + rows.map(([pid, name]) => {
+    const on = armed?.pid === pid;
+    const label = on ? "Sicher? Nochmal tippen" : (name ? "Gefunden" : "Ich wurde gefunden");
+    return `<li><span class="name">${name ? escapeHtml(name) : "Hat dich ein Sucher gesehen?"}</span>` +
+      `<button class="pill seeker${on ? " armed" : ""}" data-pid="${escapeHtml(pid)}">${label}</button></li>`;
+  }).join("") + "</ul>";
+}
+$("#found-box").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-pid]");
+  if (!b) return;
+  const pid = b.dataset.pid;
+  if (armed?.pid === pid) {
+    armed = null;
+    db.update(gp(`players/${pid}`), { caught: true, caughtBy: me.id, caughtAt: db.now(), reason: "tag" });
+  } else {
+    armed = { pid, until: Date.now() + 4000 };
+  }
+  tick();
+});
+
+/* =====================================================================
+   Sekunden-Takt: Anzeige, Pings senden, Zone prüfen, Spielende
+   ===================================================================== */
+function tick() {
+  if (!game) return;
+  const g = game, now = db.now(), s = g.settings;
+  const mine = g.players?.[me.id];
+  const role = mine?.role || "hider";
+  const center = s.centerLat != null ? { lat: s.centerLat, lng: s.centerLng } : null;
+  const phase = phaseAt(g, now);
+
+  // ---- Statusleiste
+  $("#tb-role").textContent = role === "seeker" ? "Sucher" : "Verstecker";
+  $("#tb-role").className = "v " + (role === "seeker" ? "role-seeker" : "role-hider");
+  const pingChip = $("#tb-ping-chip");
+  if (phase === "lobby") {
+    $("#tb-phase-k").textContent = "Lobby"; $("#tb-phase").textContent = code; pingChip.hidden = true;
+  } else if (phase === "hiding") {
+    const t = timeline(g);
+    $("#tb-phase-k").textContent = role === "seeker" ? "Augen zu!" : "Versteck dich";
+    $("#tb-phase").textContent = fmtClock(t.hideEnd - now); pingChip.hidden = true;
+  } else if (phase === "running") {
+    const t = timeline(g);
+    $("#tb-phase-k").textContent = "Restzeit"; $("#tb-phase").textContent = fmtClock(t.runEnd - now);
+    pingChip.hidden = false; $("#tb-ping").textContent = fmtClock(nextPingAt(g, now) - now);
+  } else {
+    $("#tb-phase-k").textContent = "Spiel"; $("#tb-phase").textContent = "Ende"; pingChip.hidden = true;
+  }
+
+  // ---- Aktionen im Spiel
+  const r = center ? zoneRadiusAt(g, now) : s.radius;
+  if (g.status === "started") {
+    // Verstecker: Ping senden
+    if (role === "hider" && !mine?.caught && phase === "running" && myPos) {
+      const idx = pingIndexAt(g, now);
+      if (idx > lastPingIdx) {
+        lastPingIdx = idx;
+        db.set(gp(`pings/${me.id}`), { lat: myPos.lat, lng: myPos.lng, t: now });
+        toast("Ping gesendet: Die Sucher sehen jetzt, wo du bist.", 2200);
+        signal(false); // Verstecker: nur Vibration, kein Ton (sonst verrät man sich)
+      }
+    }
+    // Verstecker: Zone prüfen
+    let outside = false;
+    if (role === "hider" && !mine?.caught && center && myPos && phase !== "lobby") {
+      outside = distM(myPos, center) > r;
+      if (outside) {
+        outsideSince ??= now;
+        const left = ZONE_GRACE_S * 1000 - (now - outsideSince);
+        banner(`Du bist außerhalb der Zone! Zurück in ${fmtClock(left)}`);
+        // Signal: sofort beim Verlassen, dann alle 15 s, in den letzten 10 s jede Sekunde
+        const every = left <= 10000 ? 1000 : 15000;
+        if (now - lastZoneAlert >= every - 100) { lastZoneAlert = now; signal(false, true); }
+        if (left <= 0) db.update(gp(`players/${me.id}`), { caught: true, caughtAt: now, reason: "zone" });
+      } else {
+        if (outsideSince) toast("Zurück in der Zone.");
+        outsideSince = null; lastZoneAlert = 0;
+      }
+    }
+    if (!outside) {
+      if (isDemo) banner("Demo: Tippe auf die Karte, um dich zu bewegen.", "info");
+      else if (manualPos) banner("Kein GPS: Tippe auf die Karte, um deine Position zu setzen.", "info");
+      else banner(null);
+    }
+    // Verstecker: 30 s vor dem Schrumpfen warnen, wenn man außerhalb der nächsten Zone steht
+    const nsW = nextShrink(g, now);
+    if (role === "hider" && !mine?.caught && nsW && center && myPos && nsW.at - now <= 30000 && nsW.at !== lastShrinkWarnAt
+        && distM(myPos, center) > nsW.radius) {
+      lastShrinkWarnAt = nsW.at;
+      signal(false, true);
+      toast("Die Zone schrumpft gleich. Geh in den gelben Kreis!", 4000);
+    }
+    // Sucher: eigene Position für Mit-Sucher teilen
+    if (role === "seeker" && myPos && now - lastSeekerWrite > 5000) {
+      lastSeekerWrite = now;
+      db.set(gp(`seekers/${me.id}`), { lat: myPos.lat, lng: myPos.lng, t: now });
+    }
+    // Sucher: beim Ping die eigene Position für Verstecker zeigen (falls eingestellt)
+    if (role === "seeker" && s.seekerPings && phase === "running" && myPos) {
+      const idx = pingIndexAt(g, now);
+      if (idx > lastSeekerPingIdx) {
+        lastSeekerPingIdx = idx;
+        db.set(gp(`seekerPings/${me.id}`), { lat: myPos.lat, lng: myPos.lng, t: now });
+      }
+    }
+    // Spielende (der Gastgeber trägt es ein)
+    const w = winnerOf(g, now);
+    if (w && g.host === me.id) db.update(gp(), { status: "ended", winner: w, endedAt: now });
+
+    renderInGame(g, role, mine, phase, r, now);
+  } else if (g.status === "lobby") {
+    if (g.host === me.id && !center && myPos && !manualPos) db.update(gp("settings"), { centerLat: myPos.lat, centerLng: myPos.lng });
+    banner(manualPos && !isDemo ? "Kein GPS: Tippe auf die Karte, um deine Position zu setzen." : null, "info");
+  }
+
+  // Kurzinfo für das eingeklappte Panel
+  let peek = "";
+  if (g.status === "lobby") peek = `Lobby · Code ${code}`;
+  else if (g.status === "started") {
+    const hs = hidersOf(g);
+    peek = `${$("#ig-state").textContent} · ${hs.filter(([, p]) => !p.caught).length}/${hs.length} übrig`;
+  } else peek = $("#end-title").textContent;
+  $("#peek-text").textContent = peek;
+
+  drawMap(g, role, center, r, now);
+}
+
+function renderInGame(g, role, mine, phase, r, now) {
+  const hiders = hidersOf(g), left = hiders.filter(([, p]) => !p.caught).length;
+  $("#ig-left").textContent = `${left} von ${hiders.length} Versteckern übrig`;
+  $("#ig-zone").textContent = `Zone: ${Math.round(r)} m`;
+  // Countdown bis zur nächsten Verkleinerung
+  const sh = $("#ig-shrink"), ns = nextShrink(g, now);
+  sh.hidden = !g.settings.shrink;
+  sh.classList.remove("warn");
+  if (g.settings.shrink) {
+    if (!ns) sh.textContent = "Die Zone schrumpft nicht weiter.";
+    else {
+      let txt = `Zone schrumpft in ${fmtClock(ns.at - now)} auf ${Math.round(ns.radius)} m (gelber Kreis)`;
+      const center = { lat: g.settings.centerLat, lng: g.settings.centerLng };
+      if (role === "hider" && !mine?.caught && myPos && distM(myPos, center) > ns.radius) {
+        txt += ". Du stehst außerhalb!"; sh.classList.add("warn");
+      }
+      sh.textContent = txt;
+    }
+  }
+  renderFound(g, role, mine, phase);
+  $("#sound-row").hidden = role !== "seeker";
+  if (role === "seeker") {
+    $("#ig-state").textContent = phase === "hiding" ? "Warte, bis die Versteckzeit vorbei ist." : "Finde sie!";
+    $("#ig-hint").textContent = phase === "running"
+      ? "Grüne Punkte zeigen den letzten Ping. Siehst du jemanden in echt, tippe bei seinem Namen auf „Gefunden“."
+      : "Bleib, wo du bist. Gleich geht die Jagd los.";
+  } else {
+    if (mine?.caught) { $("#ig-state").textContent = "Du bist raus."; $("#ig-hint").textContent = "Schau zu, wie die anderen sich schlagen."; }
+    else if (phase === "hiding") { $("#ig-state").textContent = "Versteck dich!"; $("#ig-hint").textContent = "Bleib innerhalb des Kreises. Gleich kommt der erste Ping."; }
+    else { $("#ig-state").textContent = "Bleib versteckt."; $("#ig-hint").textContent = "Bei jedem Ping sehen die Sucher, wo du gerade bist. Halt dein Handy entsperrt, sonst fällt der Ping aus."; }
+  }
+}
+
+function drawMap(g, role, center, r, now) {
+  dyn.clearLayers();
+  if (center) {
+    // Alles außerhalb der Zone abdunkeln: Weltfläche mit kreisförmigem Loch
+    const hole = [];
+    for (let i = 0; i < 72; i++) {
+      const a = (i / 72) * Math.PI * 2, q = offsetM(center, Math.cos(a) * r, Math.sin(a) * r);
+      hole.push([q.lat, q.lng]);
+    }
+    L.polygon([[[85, -180], [85, 180], [-85, 180], [-85, -180]], hole], {
+      stroke: false, fillColor: "#0b1120", fillOpacity: 0.5, interactive: false
+    }).addTo(dyn);
+    L.circle([center.lat, center.lng], {
+      radius: r, color: "#46d6b0", weight: 3, fill: false, interactive: false
+    }).addTo(dyn);
+    // Vorschau: so groß wird die Zone beim nächsten Schrumpfen (gelb gestrichelt)
+    const ns = g.status === "started" ? nextShrink(g, now) : (g.settings.shrink ? { radius: Math.max(g.settings.radius * SHRINK_MIN_SHARE, g.settings.radius * SHRINK_FACTOR) } : null);
+    if (ns) {
+      L.circle([center.lat, center.lng], {
+        radius: ns.radius, color: "#ffc845", weight: 3, dashArray: "10 8", fillColor: "#ffc845", fillOpacity: 0.06, interactive: false
+      }).addTo(dyn);
+    }
+  }
+  if (g.status === "started") {
+    // Sucher sehen die letzten Pings der Verstecker
+    if (role === "seeker") {
+      for (const [pid, p] of hidersOf(g)) {
+        const ping = g.pings?.[pid];
+        if (!ping || p.caught) continue;
+        const age = now - ping.t;
+        marker(ping, "ping" + (age > 60000 ? " old" : ""), `${p.name} · vor ${fmtClock(age)}${distLabel(ping)}`).addTo(dyn);
+      }
+    }
+    // Verstecker sehen die Sucher beim Ping (falls eingestellt)
+    if (role === "hider" && g.settings.seekerPings) {
+      for (const [pid, p] of seekersOf(g)) {
+        const sp = g.seekerPings?.[pid];
+        if (sp) marker(sp, "seeker", `${p.name} · vor ${fmtClock(now - sp.t)}${distLabel(sp)}`).addTo(dyn);
+      }
+    }
+    // Sucher sehen andere Sucher live
+    if (role === "seeker") {
+      for (const [pid, p] of seekersOf(g)) {
+        if (pid === me.id) continue;
+        const sp = g.seekers?.[pid];
+        if (sp && now - sp.t < 60000) marker(sp, "seeker", p.name).addTo(dyn);
+      }
+    }
+  }
+  if (myPos) marker(myPos, "me", "Du").addTo(dyn);
+}
+
+/* =====================================================================
+   Spielende
+   ===================================================================== */
+function renderEnd() {
+  const g = game, isHost = g.host === me.id;
+  $("#end-title").textContent = g.winner === "seekers" ? "Die Sucher gewinnen!" : "Die Verstecker gewinnen!";
+  $("#end-title").style.color = g.winner === "seekers" ? "var(--seeker)" : "var(--hider)";
+  const list = Object.entries(g.players || {});
+  $("#end-players").innerHTML = list.map(([pid, p]) => {
+    let st;
+    if (p.role === "seeker") st = '<span class="pill seeker">Sucher</span>';
+    else if (p.caught) st = `<span class="pill out">${p.reason === "zone" ? "Zone verlassen" : "gefunden"}</span>`;
+    else st = '<span class="pill hider">nicht gefunden</span>';
+    return `<li><span class="name">${escapeHtml(p.name)}${pid === me.id ? ' <span class="you">(du)</span>' : ""}</span>${st}</li>`;
+  }).join("");
+  $("#btn-again").hidden = !isHost;
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  banner(null);
+}
+
+$("#btn-again").onclick = async () => {
+  const players = {};
+  for (const [pid, p] of Object.entries(game.players || {})) players[pid] = { name: p.name, role: p.role, caught: false };
+  await db.update(gp(), { status: "lobby", startedAt: null, winner: null, endedAt: null, pings: null, seekers: null, seekerPings: null, players });
+  if (isDemo) resetDemoBots();
+};
+
+/* =====================================================================
+   Demo-Bots (nur im Demo-Modus): laufen langsam herum, senden Pings,
+   und lassen sich fangen wie echte Spieler.
+   ===================================================================== */
+function startDemoBots(center) {
+  demo = { center, bots: {}, lastIdx: {}, handled: new Set(), timer: null, unsub: null };
+  resetDemoBots();
+  demo.timer = setInterval(demoStep, 1000);
+  demo.unsub = db.on(gp("catches"), (all) => {
+    if (!all || !game) return;
+    for (const [key, c] of Object.entries(all)) {
+      if (demo.handled.has(key)) continue;
+      demo.handled.add(key);
+      for (const [id, b] of Object.entries(demo.bots)) {
+        if (!game.players[id]?.caught && distM(b, c) <= CATCH_RADIUS_M)
+          db.update(gp(`players/${id}`), { caught: true, caughtBy: c.by, caughtAt: db.now(), reason: "tag" });
+      }
+    }
+  });
+}
+function resetDemoBots() {
+  if (!demo) return;
+  const s = game?.settings, r = s?.radius || 250;
+  const c = s?.centerLat != null ? { lat: s.centerLat, lng: s.centerLng } : demo.center;
+  ["bot1", "bot2", "bot3"].forEach((id, i) => {
+    const ang = (i / 3) * Math.PI * 2 + Math.random();
+    const dist = r * (0.35 + Math.random() * 0.45);
+    demo.bots[id] = { ...offsetM(c, Math.cos(ang) * dist, Math.sin(ang) * dist), dir: Math.random() * Math.PI * 2 };
+    demo.lastIdx[id] = -1;
+  });
+}
+function demoStep() {
+  if (!game || game.status !== "started") return;
+  const now = db.now(), phase = phaseAt(game, now), r = zoneRadiusAt(game, now);
+  const s = game.settings, center = { lat: s.centerLat, lng: s.centerLng };
+  for (const [id, b] of Object.entries(demo.bots)) {
+    if (game.players[id]?.caught) continue;
+    // langsam umherlaufen (ca. 0,6 m/s), in der Zone bleiben
+    b.dir += (Math.random() - 0.5) * 0.6;
+    let next = offsetM(b, Math.cos(b.dir) * 0.6, Math.sin(b.dir) * 0.6);
+    if (distM(next, center) > r * 0.9) { b.dir += Math.PI; next = offsetM(b, Math.cos(b.dir) * 0.6, Math.sin(b.dir) * 0.6); }
+    b.lat = next.lat; b.lng = next.lng;
+    if (phase === "running") {
+      const idx = pingIndexAt(game, now);
+      if (idx > demo.lastIdx[id]) { demo.lastIdx[id] = idx; db.set(gp(`pings/${id}`), { lat: b.lat, lng: b.lng, t: now }); }
+    }
+  }
+}
+function stopDemoBots() {
+  if (!demo) return;
+  clearInterval(demo.timer); if (demo.unsub) demo.unsub(); demo = null;
+}
+</script>
+</body>
+</html>
