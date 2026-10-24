@@ -132,6 +132,9 @@ input[type=text]:focus { border-color: var(--hider); outline: none; }
 .pill.seeker { color: var(--seeker); }
 .pill.hider { color: var(--hider); }
 .pill.out { color: var(--muted); }
+.pill.armed { background: var(--seeker); color: #1a0d03; }
+#found-box .players li { padding: 10px 12px; }
+#found-box .pill { padding: 8px 14px; font-size: 15px; }
 button.pill:disabled { cursor: default; opacity: 1; }
 .settings { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .settings .wide { grid-column: 1 / -1; }
@@ -275,7 +278,7 @@ input[type=range] { accent-color: var(--hider); }
       <div style="display:grid;gap:12px">
         <p class="big-state" id="ig-state">–</p>
         <div class="status-line"><span id="ig-left">–</span><span id="ig-zone">–</span></div>
-        <button id="btn-gotcha" class="gotcha" hidden>GOTCHA!</button>
+        <div id="found-box" hidden></div>
         <p class="hint" id="ig-hint"></p>
       </div>
     </div>
@@ -638,7 +641,7 @@ $("#set-shrink").addEventListener("change", () => db.update(gp("settings"), { sh
 function roleButton(pid, p) {
   const isOut = p.caught;
   const cls = isOut ? "out" : p.role;
-  const text = isOut ? "gefangen" : (p.role === "seeker" ? "Sucher" : "Verstecker");
+  const text = isOut ? "gefunden" : (p.role === "seeker" ? "Sucher" : "Verstecker");
   return `<button class="pill ${cls}" data-pid="${escapeHtml(pid)}">${text}</button>`;
 }
 
@@ -700,14 +703,14 @@ function onGameChange() {
     renderLobby();
     lastPingIdx = -1; outsideSince = null; handledCatches = new Set(); prevCaught = {};
   }
-  if (status === "started") { keepAwake(); watchCatches(); }
+  if (status === "started") keepAwake();
   if (status === "ended") renderEnd();
 
   // Neu Gefangene melden
   for (const [pid, p] of Object.entries(g.players || {})) {
     if (p.caught && !prevCaught[pid] && status === "started") {
-      if (pid === me.id) toast(p.reason === "zone" ? "Du warst zu lange außerhalb der Zone. Du bist raus." : "Du wurdest gefangen!", 3500);
-      else toast(`${p.name} ${p.reason === "zone" ? "ist raus (Zone verlassen)" : "wurde gefangen!"}`);
+      if (pid === me.id) toast(p.reason === "zone" ? "Du warst zu lange außerhalb der Zone. Du bist raus." : "Du wurdest gefunden!", 3500);
+      else toast(`${p.name} ${p.reason === "zone" ? "ist raus (Zone verlassen)" : "wurde gefunden!"}`);
       if (pendingGotcha && p.caughtBy === me.id) pendingGotcha.hit = true;
     }
     prevCaught[pid] = !!p.caught;
@@ -734,18 +737,40 @@ function watchCatches() {
   });
 }
 
-$("#btn-gotcha").onclick = async () => {
-  if (!myPos) { toast("Noch kein GPS-Signal."); return; }
-  pendingGotcha = { hit: false };
-  $("#btn-gotcha").disabled = true;
-  await db.push(gp("catches"), { by: me.id, lat: myPos.lat, lng: myPos.lng, t: db.now() });
-  toast("Prüfe den 20-m-Umkreis …", 2000);
-  setTimeout(() => {
-    if (pendingGotcha && !pendingGotcha.hit) toast("Niemand im 20-m-Umkreis.");
-    pendingGotcha = null;
-    $("#btn-gotcha").disabled = false;
-  }, 5000);
-};
+/* "Gefunden" melden: Sucher tippen beim Namen, Verstecker können sich selbst melden.
+   Zweimal tippen zur Bestätigung, damit niemand versehentlich rausfliegt. */
+let armed = null, foundSig = "";
+function renderFound(g, role, mine, phase) {
+  const box = $("#found-box");
+  let rows = [];
+  if (phase === "running") {
+    if (role === "seeker") rows = hidersOf(g).filter(([, p]) => !p.caught).map(([pid, p]) => [pid, p.name]);
+    else if (!mine?.caught) rows = [[me.id, null]];
+  }
+  if (armed && armed.until < Date.now()) armed = null;
+  box.hidden = rows.length === 0;
+  const sig = JSON.stringify([rows, armed?.pid ?? null]);
+  if (sig === foundSig) return;
+  foundSig = sig;
+  box.innerHTML = '<ul class="players">' + rows.map(([pid, name]) => {
+    const on = armed?.pid === pid;
+    const label = on ? "Sicher? Nochmal tippen" : (name ? "Gefunden" : "Ich wurde gefunden");
+    return `<li><span class="name">${name ? escapeHtml(name) : "Hat dich ein Sucher gesehen?"}</span>` +
+      `<button class="pill seeker${on ? " armed" : ""}" data-pid="${escapeHtml(pid)}">${label}</button></li>`;
+  }).join("") + "</ul>";
+}
+$("#found-box").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-pid]");
+  if (!b) return;
+  const pid = b.dataset.pid;
+  if (armed?.pid === pid) {
+    armed = null;
+    db.update(gp(`players/${pid}`), { caught: true, caughtBy: me.id, caughtAt: db.now(), reason: "tag" });
+  } else {
+    armed = { pid, until: Date.now() + 4000 };
+  }
+  tick();
+});
 
 /* =====================================================================
    Sekunden-Takt: Anzeige, Pings senden, Zone prüfen, Spielende
@@ -800,7 +825,8 @@ function tick() {
       } else { outsideSince = null; }
     }
     if (!outside) {
-      if (manualPos) banner("Kein GPS: Tippe auf die Karte, um deine Position zu setzen.", "info");
+      if (isDemo) banner("Demo: Tippe auf die Karte, um dich zu bewegen.", "info");
+      else if (manualPos) banner("Kein GPS: Tippe auf die Karte, um deine Position zu setzen.", "info");
       else banner(null);
     }
     // Sucher: eigene Position für Mit-Sucher teilen
@@ -825,19 +851,16 @@ function renderInGame(g, role, mine, phase, r, now) {
   const hiders = hidersOf(g), left = hiders.filter(([, p]) => !p.caught).length;
   $("#ig-left").textContent = `${left} von ${hiders.length} Versteckern übrig`;
   $("#ig-zone").textContent = `Zone: ${Math.round(r)} m`;
-  const gBtn = $("#btn-gotcha");
+  renderFound(g, role, mine, phase);
   if (role === "seeker") {
-    gBtn.hidden = false;
-    if (!pendingGotcha) gBtn.disabled = phase !== "running";
     $("#ig-state").textContent = phase === "hiding" ? "Warte, bis die Versteckzeit vorbei ist." : "Finde sie!";
     $("#ig-hint").textContent = phase === "running"
-      ? `Grüne Punkte zeigen den letzten Ping. Bist du ${CATCH_RADIUS_M} m oder näher dran, drück GOTCHA!`
+      ? "Grüne Punkte zeigen den letzten Ping. Siehst du jemanden in echt, tippe bei seinem Namen auf „Gefunden“."
       : "Bleib, wo du bist. Gleich geht die Jagd los.";
   } else {
-    gBtn.hidden = true;
     if (mine?.caught) { $("#ig-state").textContent = "Du bist raus."; $("#ig-hint").textContent = "Schau zu, wie die anderen sich schlagen."; }
     else if (phase === "hiding") { $("#ig-state").textContent = "Versteck dich!"; $("#ig-hint").textContent = "Bleib innerhalb des Kreises. Gleich kommt der erste Ping."; }
-    else { $("#ig-state").textContent = "Bleib versteckt."; $("#ig-hint").textContent = "Bei jedem Ping sehen die Sucher, wo du gerade bist. Halt dein Handy entsperrt, sonst fällt der Ping aus."; }
+    else { $("#ig-state").textContent = "Bleib versteckt."; $("#ig-hint").textContent = "Bei jedem Ping sehen die Sucher, wo du gerade bist. Halt dein Handy entsperrt, sonst fällt der Ping aus. Sieht dich ein Sucher, tippe auf „Ich wurde gefunden“."; }
   }
 }
 
@@ -868,7 +891,6 @@ function drawMap(g, role, center, r, now) {
         const sp = g.seekers?.[pid];
         if (sp && now - sp.t < 60000) marker(sp, "seeker", p.name).addTo(dyn);
       }
-      if (myPos) L.circle([myPos.lat, myPos.lng], { radius: CATCH_RADIUS_M, color: "#ff7a2f", weight: 1, fillOpacity: 0.12, interactive: false }).addTo(dyn);
     }
   }
   if (myPos) marker(myPos, "me", "Du").addTo(dyn);
@@ -885,7 +907,7 @@ function renderEnd() {
   $("#end-players").innerHTML = list.map(([pid, p]) => {
     let st;
     if (p.role === "seeker") st = '<span class="pill seeker">Sucher</span>';
-    else if (p.caught) st = `<span class="pill out">${p.reason === "zone" ? "Zone verlassen" : "gefangen"}</span>`;
+    else if (p.caught) st = `<span class="pill out">${p.reason === "zone" ? "Zone verlassen" : "gefunden"}</span>`;
     else st = '<span class="pill hider">nicht gefunden</span>';
     return `<li><span class="name">${escapeHtml(p.name)}${pid === me.id ? ' <span class="you">(du)</span>' : ""}</span>${st}</li>`;
   }).join("");
