@@ -21,6 +21,7 @@
   --seeker: #ff7a2f;   /* Sucher: Signalorange */
   --hider: #46d6b0;    /* Verstecker: Minzgrün */
   --danger: #ff5470;
+  --zone-next: #ffc845; /* nächste (kleinere) Zone */
   --display: "Bricolage Grotesque", "Arial Black", system-ui, sans-serif;
   --body: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
@@ -105,6 +106,28 @@ input[type=text]:focus { border-color: var(--hider); outline: none; }
 }
 #banner.info { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); font-weight: 500; font-size: 14px; }
 
+/* Panel einklappen */
+.sheet-handle {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  background: transparent; border: 0; padding: 0 0 2px; text-align: left; min-height: 28px;
+}
+.sheet-handle .grip { width: 36px; height: 5px; border-radius: 3px; background: var(--line); flex: none; }
+.sheet-handle .peek { flex: 1; min-width: 0; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sheet-handle .chev { color: var(--muted); font-size: 13px; font-weight: 700; white-space: nowrap; }
+#sheet.collapsed > :not(.sheet-handle) { display: none !important; }
+#sheet.collapsed { gap: 0; }
+
+/* "Zu mir"-Button über dem Panel */
+#btn-me {
+  position: absolute; z-index: 1000;
+  right: max(12px, env(safe-area-inset-right));
+  bottom: calc(var(--sheet-h, 140px) + 12px);
+  width: 48px; height: 48px; border-radius: 50%;
+  background: rgba(16,24,38,.92); border: 1px solid var(--line); color: #4aa3ff;
+  display: grid; place-items: center; box-shadow: 0 4px 14px rgba(0,0,0,.35);
+}
+#btn-me svg { width: 24px; height: 24px; }
+
 #sheet {
   position: absolute; z-index: 1000; left: 0; right: 0; bottom: 0;
   max-height: 62%; overflow-y: auto;
@@ -161,6 +184,8 @@ input[type=range] { accent-color: var(--hider); }
 }
 .gotcha:active:not(:disabled) { transform: translateY(4px); box-shadow: 0 2px 0 #a8461a; }
 .gotcha:disabled { background: var(--panel-2); color: var(--muted); box-shadow: none; }
+.shrink-line { margin: 0; font-weight: 700; color: var(--zone-next); font-variant-numeric: tabular-nums; }
+.shrink-line.warn { color: var(--danger); }
 .status-line { display: flex; justify-content: space-between; gap: 10px; font-size: 14px; color: var(--muted); flex-wrap: wrap; }
 .big-state { font: 800 22px/1.15 var(--display); margin: 0; }
 
@@ -234,7 +259,14 @@ input[type=range] { accent-color: var(--hider); }
 
   <div id="banner" hidden></div>
 
+  <button id="btn-me" aria-label="Karte auf mich zentrieren" title="Zu mir">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4" fill="currentColor"/><circle cx="12" cy="12" r="8"/><path d="M12 1v3M12 20v3M1 12h3M20 12h3"/></svg>
+  </button>
+
   <div id="sheet">
+    <button id="sheet-toggle" class="sheet-handle" aria-expanded="true">
+      <span class="grip"></span><span class="peek" id="peek-text" hidden></span><span class="chev" id="sheet-chev">Einklappen ▾</span>
+    </button>
     <!-- Lobby -->
     <div id="lobby" hidden>
       <div style="display:grid;gap:14px">
@@ -287,6 +319,7 @@ input[type=range] { accent-color: var(--hider); }
       <div style="display:grid;gap:12px">
         <p class="big-state" id="ig-state">–</p>
         <div class="status-line"><span id="ig-left">–</span><span id="ig-zone">–</span></div>
+        <p class="shrink-line" id="ig-shrink" hidden></p>
         <div id="found-box" hidden></div>
         <p class="hint" id="ig-hint"></p>
         <label class="check" id="sound-row" hidden style="font-size:14px"><input id="sound-on" type="checkbox"> Ton bei neuen Pings</label>
@@ -360,6 +393,12 @@ function distM(a, b) {
 function offsetM(p, dx, dy) {
   return { lat: p.lat + dy / 111320, lng: p.lng + dx / (111320 * Math.cos(p.lat * Math.PI / 180)) };
 }
+/** " · 120 m" bzw. " · 1,2 km" vom eigenen Standort aus */
+function distLabel(p) {
+  if (!myPos) return "";
+  const d = distM(myPos, p);
+  return d < 1000 ? ` · ${Math.max(10, Math.round(d / 10) * 10)} m` : ` · ${(d / 1000).toFixed(1).replace(".", ",")} km`;
+}
 function fmtClock(ms) {
   ms = Math.max(0, ms);
   const s = Math.ceil(ms / 1000), m = Math.floor(s / 60);
@@ -388,6 +427,19 @@ function zoneRadiusAt(g, now) {
   if (now < t.hideEnd) return s.radius;
   const steps = Math.floor((now - t.hideEnd) / (SHRINK_EVERY_MIN * 60000));
   return Math.max(s.radius * SHRINK_MIN_SHARE, s.radius * Math.pow(SHRINK_FACTOR, steps));
+}
+/** Nächste Verkleinerung: { at, radius } oder null, wenn nichts mehr schrumpft. */
+function nextShrink(g, now) {
+  const s = g.settings;
+  if (!s.shrink || g.status !== "started") return null;
+  const t = timeline(g), step = SHRINK_EVERY_MIN * 60000;
+  const k = now < t.hideEnd ? 1 : Math.floor((now - t.hideEnd) / step) + 1;
+  const at = t.hideEnd + k * step;
+  if (at >= t.runEnd) return null;
+  const cur = zoneRadiusAt(g, now);
+  const radius = Math.max(s.radius * SHRINK_MIN_SHARE, s.radius * Math.pow(SHRINK_FACTOR, k));
+  if (radius >= cur - 0.5) return null;
+  return { at, radius };
 }
 function pingIndexAt(g, now) {
   const t = timeline(g);
@@ -502,7 +554,7 @@ function signal(withSound, danger = false) {
   el.classList.remove("flash", "danger"); void el.offsetWidth;
   el.classList.add("flash"); if (danger) el.classList.add("danger");
 }
-let lastZoneAlert = 0;
+let lastZoneAlert = 0, lastShrinkWarnAt = 0;
 
 /* =====================================================================
    Karte
@@ -512,6 +564,29 @@ L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
 }).addTo(map);
 const dyn = L.layerGroup().addTo(map);
+
+/* "Zu mir"-Button */
+document.getElementById("btn-me").onclick = () => {
+  if (!myPos) { toast("Noch kein Standort."); return; }
+  map.setView([myPos.lat, myPos.lng], Math.max(map.getZoom(), 17));
+};
+
+/* Panel ein- und ausklappen */
+let sheetCollapsed = false;
+function setSheetCollapsed(c) {
+  sheetCollapsed = c;
+  const sh = document.getElementById("sheet");
+  sh.classList.toggle("collapsed", c);
+  document.getElementById("sheet-toggle").setAttribute("aria-expanded", String(!c));
+  document.getElementById("sheet-chev").textContent = c ? "Ausklappen ▴" : "Einklappen ▾";
+  document.getElementById("peek-text").hidden = !c;
+}
+document.getElementById("sheet-toggle").onclick = () => setSheetCollapsed(!sheetCollapsed);
+// Höhe des Panels merken, damit der "Zu mir"-Button immer darüber sitzt
+try {
+  new ResizeObserver(() => document.getElementById("play").style.setProperty("--sheet-h", document.getElementById("sheet").offsetHeight + "px"))
+    .observe(document.getElementById("sheet"));
+} catch {}
 
 function marker(pos, cls, label) {
   const icon = L.divIcon({
@@ -768,9 +843,11 @@ $("#btn-start").onclick = async () => {
 /* =====================================================================
    Reaktion auf Datenänderungen
    ===================================================================== */
+let lastStatus = null;
 function onGameChange() {
   const g = game;
   const status = g.status;
+  if (status !== lastStatus) { lastStatus = status; setSheetCollapsed(false); }
   $("#lobby").hidden = status !== "lobby";
   $("#ingame").hidden = status !== "started";
   $("#ended").hidden = status !== "ended";
@@ -825,7 +902,6 @@ function renderFound(g, role, mine, phase) {
   let rows = [];
   if (phase === "running") {
     if (role === "seeker") rows = hidersOf(g).filter(([, p]) => !p.caught).map(([pid, p]) => [pid, p.name]);
-    else if (!mine?.caught) rows = [[me.id, null]];
   }
   if (armed && armed.until < Date.now()) armed = null;
   box.hidden = rows.length === 0;
@@ -916,6 +992,14 @@ function tick() {
       else if (manualPos) banner("Kein GPS: Tippe auf die Karte, um deine Position zu setzen.", "info");
       else banner(null);
     }
+    // Verstecker: 30 s vor dem Schrumpfen warnen, wenn man außerhalb der nächsten Zone steht
+    const nsW = nextShrink(g, now);
+    if (role === "hider" && !mine?.caught && nsW && center && myPos && nsW.at - now <= 30000 && nsW.at !== lastShrinkWarnAt
+        && distM(myPos, center) > nsW.radius) {
+      lastShrinkWarnAt = nsW.at;
+      signal(false, true);
+      toast("Die Zone schrumpft gleich. Geh in den gelben Kreis!", 4000);
+    }
     // Sucher: eigene Position für Mit-Sucher teilen
     if (role === "seeker" && myPos && now - lastSeekerWrite > 5000) {
       lastSeekerWrite = now;
@@ -939,6 +1023,15 @@ function tick() {
     banner(manualPos && !isDemo ? "Kein GPS: Tippe auf die Karte, um deine Position zu setzen." : null, "info");
   }
 
+  // Kurzinfo für das eingeklappte Panel
+  let peek = "";
+  if (g.status === "lobby") peek = `Lobby · Code ${code}`;
+  else if (g.status === "started") {
+    const hs = hidersOf(g);
+    peek = `${$("#ig-state").textContent} · ${hs.filter(([, p]) => !p.caught).length}/${hs.length} übrig`;
+  } else peek = $("#end-title").textContent;
+  $("#peek-text").textContent = peek;
+
   drawMap(g, role, center, r, now);
 }
 
@@ -946,6 +1039,21 @@ function renderInGame(g, role, mine, phase, r, now) {
   const hiders = hidersOf(g), left = hiders.filter(([, p]) => !p.caught).length;
   $("#ig-left").textContent = `${left} von ${hiders.length} Versteckern übrig`;
   $("#ig-zone").textContent = `Zone: ${Math.round(r)} m`;
+  // Countdown bis zur nächsten Verkleinerung
+  const sh = $("#ig-shrink"), ns = nextShrink(g, now);
+  sh.hidden = !g.settings.shrink;
+  sh.classList.remove("warn");
+  if (g.settings.shrink) {
+    if (!ns) sh.textContent = "Die Zone schrumpft nicht weiter.";
+    else {
+      let txt = `Zone schrumpft in ${fmtClock(ns.at - now)} auf ${Math.round(ns.radius)} m (gelber Kreis)`;
+      const center = { lat: g.settings.centerLat, lng: g.settings.centerLng };
+      if (role === "hider" && !mine?.caught && myPos && distM(myPos, center) > ns.radius) {
+        txt += ". Du stehst außerhalb!"; sh.classList.add("warn");
+      }
+      sh.textContent = txt;
+    }
+  }
   renderFound(g, role, mine, phase);
   $("#sound-row").hidden = role !== "seeker";
   if (role === "seeker") {
@@ -956,18 +1064,31 @@ function renderInGame(g, role, mine, phase, r, now) {
   } else {
     if (mine?.caught) { $("#ig-state").textContent = "Du bist raus."; $("#ig-hint").textContent = "Schau zu, wie die anderen sich schlagen."; }
     else if (phase === "hiding") { $("#ig-state").textContent = "Versteck dich!"; $("#ig-hint").textContent = "Bleib innerhalb des Kreises. Gleich kommt der erste Ping."; }
-    else { $("#ig-state").textContent = "Bleib versteckt."; $("#ig-hint").textContent = "Bei jedem Ping sehen die Sucher, wo du gerade bist. Halt dein Handy entsperrt, sonst fällt der Ping aus. Sieht dich ein Sucher, tippe auf „Ich wurde gefunden“."; }
+    else { $("#ig-state").textContent = "Bleib versteckt."; $("#ig-hint").textContent = "Bei jedem Ping sehen die Sucher, wo du gerade bist. Halt dein Handy entsperrt, sonst fällt der Ping aus."; }
   }
 }
 
 function drawMap(g, role, center, r, now) {
   dyn.clearLayers();
   if (center) {
-    L.circle([center.lat, center.lng], {
-      radius: r, color: "#46d6b0", weight: 3, fillColor: "#46d6b0", fillOpacity: 0.07, dashArray: g.settings.shrink ? "8 6" : null, interactive: false
+    // Alles außerhalb der Zone abdunkeln: Weltfläche mit kreisförmigem Loch
+    const hole = [];
+    for (let i = 0; i < 72; i++) {
+      const a = (i / 72) * Math.PI * 2, q = offsetM(center, Math.cos(a) * r, Math.sin(a) * r);
+      hole.push([q.lat, q.lng]);
+    }
+    L.polygon([[[85, -180], [85, 180], [-85, 180], [-85, -180]], hole], {
+      stroke: false, fillColor: "#0b1120", fillOpacity: 0.5, interactive: false
     }).addTo(dyn);
-    if (g.settings.shrink && r !== g.settings.radius) {
-      L.circle([center.lat, center.lng], { radius: g.settings.radius, color: "#9aa7c0", weight: 1, fill: false, dashArray: "2 6", interactive: false }).addTo(dyn);
+    L.circle([center.lat, center.lng], {
+      radius: r, color: "#46d6b0", weight: 3, fill: false, interactive: false
+    }).addTo(dyn);
+    // Vorschau: so groß wird die Zone beim nächsten Schrumpfen (gelb gestrichelt)
+    const ns = g.status === "started" ? nextShrink(g, now) : (g.settings.shrink ? { radius: Math.max(g.settings.radius * SHRINK_MIN_SHARE, g.settings.radius * SHRINK_FACTOR) } : null);
+    if (ns) {
+      L.circle([center.lat, center.lng], {
+        radius: ns.radius, color: "#ffc845", weight: 3, dashArray: "10 8", fillColor: "#ffc845", fillOpacity: 0.06, interactive: false
+      }).addTo(dyn);
     }
   }
   if (g.status === "started") {
@@ -977,14 +1098,14 @@ function drawMap(g, role, center, r, now) {
         const ping = g.pings?.[pid];
         if (!ping || p.caught) continue;
         const age = now - ping.t;
-        marker(ping, "ping" + (age > 60000 ? " old" : ""), `${p.name} · vor ${fmtClock(age)}`).addTo(dyn);
+        marker(ping, "ping" + (age > 60000 ? " old" : ""), `${p.name} · vor ${fmtClock(age)}${distLabel(ping)}`).addTo(dyn);
       }
     }
     // Verstecker sehen die Sucher beim Ping (falls eingestellt)
     if (role === "hider" && g.settings.seekerPings) {
       for (const [pid, p] of seekersOf(g)) {
         const sp = g.seekerPings?.[pid];
-        if (sp) marker(sp, "seeker", `${p.name} · vor ${fmtClock(now - sp.t)}`).addTo(dyn);
+        if (sp) marker(sp, "seeker", `${p.name} · vor ${fmtClock(now - sp.t)}${distLabel(sp)}`).addTo(dyn);
       }
     }
     // Sucher sehen andere Sucher live
